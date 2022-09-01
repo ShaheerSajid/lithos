@@ -39,3 +39,9 @@ out/
 checkpoints/
 runs/
 .aider*
+
+# Local-only vendor-PDK adapters + harnesses (vendor IP — never commit).
+pdks/tsmc180/
+pdks/tsmc65/
+scripts/validate_tsmc180.py
+scripts/validate_tsmc65.py

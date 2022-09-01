@@ -9,6 +9,7 @@ Concrete backends self-register at import time. Currently registered:
 
 * ``"klayout"`` → :class:`lithos_drc.klayout_runner.KLayoutDRCRunner`
 * ``"magic"``   → :class:`lithos_drc.magic_runner.MagicDRCRunner`
+* ``"calibre"`` → :class:`lithos_drc.calibre_runner.CalibreDRCRunner`
 """
 
 from lithos_drc.base import DRCRunner, DRCViolation
@@ -17,6 +18,7 @@ from lithos_drc.resolver import (
     partition_unresolved,
     resolve_violations,
 )
+from lithos_drc.calibre_runner import CalibreDRCRunner
 from lithos_drc.klayout_runner import KLayoutDRCRunner
 from lithos_drc.magic_runner   import MagicDRCRunner
 from lithos_drc import registry
@@ -24,6 +26,7 @@ from lithos_drc import registry
 # Self-register the bundled backends.
 registry.register("klayout", KLayoutDRCRunner)
 registry.register("magic",   MagicDRCRunner)
+registry.register("calibre", CalibreDRCRunner)
 
 __all__ = [
     "DRCRunner",
@@ -32,6 +35,7 @@ __all__ = [
     "partition_unresolved",
     "resolve_violations",
     "registry",
+    "CalibreDRCRunner",
     "KLayoutDRCRunner",
     "MagicDRCRunner",
 ]
