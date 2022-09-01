@@ -227,72 +227,77 @@ class CalibreDRCRunner(DRCRunner):
 
 # ── ASCII RVDB parser (pure, public for testing) ────────────────────────────
 
-# Calibre ASCII RVDB layout (one rule block per checked rule that
-# produced results):
+# Calibre ASCII RVDB format. One rule block per checked rule.
 #
-#   <rule_name>
-#   <date> <time> <result_count> <orig_count>
-#   <description-line 1>
-#   <description-line 2>
+#   $$$CONTEXT_INFO$$$ <version>             ← file header
+#   RULE.NAME                                ← rule name (line by itself)
+#   <count> <orig_count> <def_lines> <date>  ← stats
+#   RULE.NAME { @ description @              ← rule definition opens
+#     ...body...                             ← def_lines total counting the `{` line
+#   }                                        ← rule definition closes
+#   p <id> <vertex_count>                    ← polygon record (one violation)
+#   <x1_dbu> <y1_dbu>                        ← vertex_count lines, integer dbu (nm)
+#   <x2_dbu> <y2_dbu>
 #   ...
-#   p <severity> <count> <cell_num> <x> <y>   ← polygon header
-#   <x1> <y1>
-#   <x2> <y2>
+#   e <id> 2 <x1_dbu> <y1_dbu> <x2_dbu> <y2_dbu>   ← edge record (rare)
 #   ...
-#   e <severity> <count> <cell_num> <x1> <y1> <x2> <y2>   ← edge (one line)
-#   ...
-#   <next rule_name>
+#   <next RULE.NAME>
 #
-# We extract per-result records, emitting one :class:`DRCViolation` per
-# `p` or `e` block. The parser is permissive: it accepts the structure
-# we know and skips any text outside of rule blocks.
+# Rules with ``count == 0`` have no p/e records — only the definition.
+# Coordinates are integer database units (1 dbu = 1 nm = 0.001 µm).
 
 _RULE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_\.\-]*$")
+_DBU_TO_UM    = 0.001
 
 
 def parse_rvdb_ascii(path: Path) -> list[DRCViolation]:
     """Parse a Calibre ASCII RVDB into :class:`DRCViolation` objects.
 
     Each ``p`` (polygon) or ``e`` (edge) record under a rule becomes one
-    violation. Coordinates are reported in microns (Calibre's default
-    when the deck doesn't override units).
+    violation. Coordinates in the RVDB are integer database units (nm);
+    the returned ``DRCViolation`` uses microns.
     """
     lines = path.read_text(errors="replace").splitlines()
     i, n = 0, len(lines)
     violations: list[DRCViolation] = []
 
-    # Skip the file-level header until we land on the first rule name.
-    while i < n and not _looks_like_rule_name(lines[i]):
-        i += 1
-
     while i < n:
-        rule = lines[i].strip()
-        i += 1
-        # Header line: <date> <time> <result_count> <orig_count>
-        if i < n and re.match(r"^\d{2}/\d{2}/\d{4}", lines[i].strip()):
+        line = lines[i].strip()
+        # Skip blank lines, the $$$CONTEXT_INFO$$$ header, and anything that
+        # isn't the bare rule name we expect at the start of a block.
+        if not _looks_like_rule_name(line):
             i += 1
-        # Read description lines (up to the first record header `p` or `e`).
-        desc_lines: list[str] = []
-        while i < n:
-            ln = lines[i].rstrip()
-            if _is_record_header(ln) or _looks_like_rule_name(ln):
-                break
-            if ln:
-                desc_lines.append(ln)
-            i += 1
-        description = " ".join(desc_lines).strip()
+            continue
 
-        # Consume polygon / edge records until we see the next rule.
-        while i < n and not _looks_like_rule_name(lines[i]):
-            ln = lines[i].rstrip()
-            head = _parse_record_header(ln)
+        rule = line
+        i += 1
+        if i >= n:
+            break
+
+        # Stats line: "<count> <orig> <def_lines> <date string ...>".
+        count, def_lines, ok = _parse_stats_line(lines[i])
+        if not ok:
+            continue
+        i += 1
+
+        # Skip the rule-definition body: ``def_lines`` lines starting
+        # with ``RULE.NAME { @ ... @``.
+        i += def_lines
+        description = _extract_description(lines, i - def_lines)
+
+        # Consume ``count`` violation records.
+        for _ in range(count):
+            if i >= n:
+                break
+            head = _parse_record_header(lines[i])
             if head is None:
                 i += 1
                 continue
-            kind, count = head
+            kind, vertex_count = head
             i += 1
-            cx, cy, points = _consume_record_body(lines, i, kind, count)
-            i += _record_body_lines(kind, count)
+            cx, cy = _consume_record_body(lines, i, kind, vertex_count)
+            if kind == "p":
+                i += vertex_count
             violations.append(DRCViolation(
                 rule        = rule,
                 description = description,
@@ -312,69 +317,81 @@ def _looks_like_rule_name(line: str) -> bool:
 
 def _is_record_header(line: str) -> bool:
     parts = line.strip().split()
-    return len(parts) >= 1 and parts[0] in ("p", "e")
+    return len(parts) >= 2 and parts[0] in ("p", "e")
+
+
+def _parse_stats_line(line: str) -> tuple[int, int, bool]:
+    """Parse ``<count> <orig> <def_lines> <date...>`` → (count, def_lines, ok).
+
+    Returns ``ok=False`` when the line doesn't look like a stats header
+    (caller bails the current rule).
+    """
+    parts = line.strip().split()
+    if len(parts) < 4:
+        return 0, 0, False
+    try:
+        count     = int(parts[0])
+        def_lines = int(parts[2])
+        return count, def_lines, True
+    except ValueError:
+        return 0, 0, False
+
+
+def _extract_description(lines: list[str], start: int) -> str:
+    """Pull the ``@ description @`` comment from the rule's definition opener."""
+    if 0 <= start < len(lines):
+        m = re.search(r"@\s*(.+?)\s*@", lines[start])
+        if m:
+            return m.group(1).strip()
+    return ""
 
 
 def _parse_record_header(line: str) -> Optional[tuple[str, int]]:
-    """Return ``(kind, vertex_count)`` for a polygon/edge header, else None.
+    """Return ``(kind, vertex_count)`` for a polygon/edge header.
 
-    Polygon header: ``p <severity> <vertex_count> <cell_num> <x> <y>``
-    Edge header:    ``e <severity> <count> <cell_num> <x1> <y1> <x2> <y2>``
+    * Polygon: ``p <id> <vertex_count>`` (vertices on subsequent lines).
+    * Edge:    ``e <id> 2 <x1> <y1> <x2> <y2>`` (single line).
     """
     parts = line.strip().split()
-    if not parts:
+    if len(parts) < 3 or parts[0] not in ("p", "e"):
         return None
-    if parts[0] == "p" and len(parts) >= 6:
-        try:
-            return "p", int(parts[2])
-        except ValueError:
-            return None
-    if parts[0] == "e" and len(parts) >= 8:
-        return "e", 2   # edge always has 2 points
-    return None
-
-
-def _record_body_lines(kind: str, count: int) -> int:
-    """Polygon records carry ``count`` coordinate lines after the header.
-
-    Edge records pack both points into the header itself — zero body lines.
-    """
-    if kind == "p":
-        return max(count, 0)
-    return 0
+    try:
+        return parts[0], int(parts[2])
+    except ValueError:
+        return None
 
 
 def _consume_record_body(
-    lines: list[str], start: int, kind: str, count: int,
-) -> tuple[float, float, list[tuple[float, float]]]:
-    """Return centroid + raw points for a record."""
+    lines: list[str], start: int, kind: str, vertex_count: int,
+) -> tuple[float, float]:
+    """Return polygon / edge centroid in µm."""
     if kind == "e":
-        # Edge points are in the header — already consumed; back up to it.
         head_parts = lines[start - 1].strip().split()
         try:
-            x1, y1 = float(head_parts[4]), float(head_parts[5])
-            x2, y2 = float(head_parts[6]), float(head_parts[7])
+            x1, y1 = int(head_parts[3]), int(head_parts[4])
+            x2, y2 = int(head_parts[5]), int(head_parts[6])
         except (IndexError, ValueError):
-            return 0.0, 0.0, []
-        return (x1 + x2) / 2, (y1 + y2) / 2, [(x1, y1), (x2, y2)]
+            return 0.0, 0.0
+        return ((x1 + x2) / 2) * _DBU_TO_UM, ((y1 + y2) / 2) * _DBU_TO_UM
 
-    # Polygon: count coordinate lines.
+    # Polygon: vertex_count coordinate lines after the header.
     pts: list[tuple[float, float]] = []
-    for k in range(count):
+    for k in range(vertex_count):
         idx = start + k
         if idx >= len(lines):
             break
         parts = lines[idx].strip().split()
         if len(parts) >= 2:
             try:
-                pts.append((float(parts[0]), float(parts[1])))
+                pts.append((int(parts[0]) * _DBU_TO_UM,
+                            int(parts[1]) * _DBU_TO_UM))
             except ValueError:
                 pass
     if not pts:
-        return 0.0, 0.0, []
+        return 0.0, 0.0
     cx = sum(p[0] for p in pts) / len(pts)
     cy = sum(p[1] for p in pts) / len(pts)
-    return cx, cy, pts
+    return cx, cy
 
 
 def _detect_top_cell(gds_path: Path) -> Optional[str]:

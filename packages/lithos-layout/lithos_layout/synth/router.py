@@ -90,6 +90,11 @@ from lithos_layout.synth.port_resolver import PortCandidate
 # :meth:`Router.route` call.
 _drawn_poly_contacts: dict[tuple[float, str], tuple[float, float]] = {}
 
+# Smallest distance treated as nonzero — half the typical 5 nm manufacturing
+# grid. Used to skip emitting rectangles that collapsed to a line on PDKs
+# with a degenerate inter-cell gap.
+_MFG_EPS: float = 0.001
+
 
 def _rect(comp: Any, x0: float, x1: float, y0: float, y1: float,
           layer: Any, snap_grid: float = 0.005) -> None:
@@ -1025,13 +1030,19 @@ def _gate_to_drain(
         _rect(comp, pc_x - m0_hx_left, pc_x + m0_hx_right,
                     pc_y - m0_hy_val,  pc_y + m0_hy_val, lyr_m0)
 
-    # 4. Gate poly stub: connect transistor poly edge to the contact pad
+    # 4. Gate poly stub: connect transistor poly edge to the contact pad.
+    # When the contact pad is reused (drawn by a previous spec on the
+    # same gate) AND the PDK collapses the inter-cell gap to zero
+    # (e.g. TSMC180 — NW enclosure rule fully consumes the gap), the
+    # stub rect spans a zero-height interval. Guard against that.
     if is_nmos_gate:
         poly_top = global_poly_top(gate_dev)
-        _rect(comp, gx0, gx1, poly_top, pc_y + poly_pad_hy, lyr_poly)
+        stub_y0, stub_y1 = poly_top, pc_y + poly_pad_hy
     else:
         poly_bot = global_poly_bottom(gate_dev)
-        _rect(comp, gx0, gx1, pc_y - poly_pad_hy, poly_bot, lyr_poly)
+        stub_y0, stub_y1 = pc_y - poly_pad_hy, poly_bot
+    if stub_y1 - stub_y0 > _MFG_EPS:
+        _rect(comp, gx0, gx1, stub_y0, stub_y1, lyr_poly)
 
     # ── Trunk on spec.layer ──────────────────────────────────────────
     route_layer = spec.layer or "m0"

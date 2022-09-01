@@ -99,39 +99,52 @@ def test_docker_exec_when_container_set(tmp_path: Path):
 # ── ASCII RVDB parser ───────────────────────────────────────────────────────
 
 def test_parse_rvdb_polygon_record(tmp_path: Path):
-    """A polygon record under one rule produces one violation."""
+    """A polygon record (one violation) under a rule with count=1.
+
+    Layout mirrors the real Calibre format we observed against TSMC180:
+    rule name on its own line, then a ``<count> <orig> <def_lines> <date>``
+    stats line, then ``def_lines`` lines of rule definition (opening
+    ``{ @ comment @`` brace, body, ``}`` close), then the polygon record.
+    Coordinates are integer dbu (nm).
+    """
     rvdb = tmp_path / "out.results"
     rvdb.write_text(
-        "calibre header line\n"
-        "test_cell\n"
+        "$$$CONTEXT_INFO$$$ 1000\n"
         "POLY.SP.1\n"
-        "07/01/2026 12:00:00 1 1\n"
-        "Poly-to-poly spacing\n"
-        "p 1 4 1 0 0\n"
-        "1.000 1.000\n"
-        "2.000 1.000\n"
-        "2.000 2.000\n"
-        "1.000 2.000\n"
+        "1 1 3 Sep 1 17:42:52 2022\n"
+        "POLY.SP.1 { @ Poly-to-poly spacing < 0.21 @\n"
+        "  EXT POLY < 0.21\n"
+        "}\n"
+        "p 1 4\n"
+        "1000 1000\n"
+        "2000 1000\n"
+        "2000 2000\n"
+        "1000 2000\n"
     )
     vs = parse_rvdb_ascii(rvdb)
     assert len(vs) == 1
     v = vs[0]
     assert v.rule == "POLY.SP.1"
-    assert "Poly-to-poly spacing" in v.description
-    # Centroid of unit square at (1,1)→(2,2) = (1.5, 1.5).
+    assert v.description == "Poly-to-poly spacing < 0.21"
+    # Centroid of square [(1,1),(2,1),(2,2),(1,2)] = (1.5, 1.5) µm.
     assert v.x == pytest.approx(1.5)
     assert v.y == pytest.approx(1.5)
 
 
 def test_parse_rvdb_edge_record(tmp_path: Path):
-    """Edge records pack both endpoints into the header line."""
+    """Edge records pack both endpoints into the header line.
+
+    Format: ``e <id> 2 <x1> <y1> <x2> <y2>`` (integer dbu).
+    """
     rvdb = tmp_path / "out.results"
     rvdb.write_text(
-        "test_cell\n"
+        "$$$CONTEXT_INFO$$$ 1000\n"
         "M1.W.1\n"
-        "07/01/2026 12:00:00 1 1\n"
-        "Metal-1 minimum width\n"
-        "e 1 2 1 0.100 0.000 0.100 0.500\n"
+        "1 1 3 Sep 1 17:42:52 2022\n"
+        "M1.W.1 { @ Metal-1 minimum width < 0.23 @\n"
+        "  INT M1 < 0.23\n"
+        "}\n"
+        "e 1 2 100 0 100 500\n"
     )
     vs = parse_rvdb_ascii(rvdb)
     assert len(vs) == 1
@@ -142,27 +155,30 @@ def test_parse_rvdb_edge_record(tmp_path: Path):
 
 
 def test_parse_rvdb_multiple_rules_and_records(tmp_path: Path):
-    """Multiple rules + multiple records per rule → flat violation list."""
+    """Multiple rules; multiple records per rule → flat violation list."""
     rvdb = tmp_path / "out.results"
     rvdb.write_text(
-        "test_cell\n"
+        "$$$CONTEXT_INFO$$$ 1000\n"
         "RULE.A\n"
-        "07/01/2026 12:00:00 2 2\n"
-        "Rule A description\n"
-        "e 1 2 1 0.0 0.0 1.0 0.0\n"
-        "e 1 2 1 2.0 2.0 3.0 2.0\n"
+        "2 2 3 Sep 1 17:42:52 2022\n"
+        "RULE.A { @ Rule A desc @\n"
+        "  expr\n"
+        "}\n"
+        "e 1 2 0 0 1000 0\n"
+        "e 2 2 2000 2000 3000 2000\n"
         "RULE.B\n"
-        "07/01/2026 12:00:00 1 1\n"
-        "Rule B description\n"
-        "p 1 3 1 5 5\n"
-        "5.000 5.000\n"
-        "6.000 5.000\n"
-        "5.500 6.000\n"
+        "1 1 3 Sep 1 17:42:52 2022\n"
+        "RULE.B { @ Rule B desc @\n"
+        "  expr\n"
+        "}\n"
+        "p 1 3\n"
+        "5000 5000\n"
+        "6000 5000\n"
+        "5500 6000\n"
     )
     vs = parse_rvdb_ascii(rvdb)
     assert len(vs) == 3
-    rules = [v.rule for v in vs]
-    assert rules == ["RULE.A", "RULE.A", "RULE.B"]
+    assert [v.rule for v in vs] == ["RULE.A", "RULE.A", "RULE.B"]
     # First edge centroid = (0.5, 0); second = (2.5, 2.0); polygon centroid ≈ (5.5, 5.33).
     assert vs[0].x == pytest.approx(0.5)
     assert vs[1].x == pytest.approx(2.5)
@@ -170,11 +186,29 @@ def test_parse_rvdb_multiple_rules_and_records(tmp_path: Path):
     assert vs[2].y == pytest.approx(5.333, rel=1e-3)
 
 
+def test_parse_rvdb_zero_count_rules_skipped(tmp_path: Path):
+    """Rules with zero violation count are echoed by Calibre as metadata
+    (rule definition only) — the parser must not invent violations from them."""
+    rvdb = tmp_path / "out.results"
+    rvdb.write_text(
+        "$$$CONTEXT_INFO$$$ 1000\n"
+        "NW.W.1\n"
+        "0 0 3 Sep 1 17:42:52 2022\n"
+        "NW.W.1 { @ Min. NWEL width < 0.86 @\n"
+        "  INT NWEL < 0.86\n"
+        "}\n"
+        "NW.S.1\n"
+        "0 0 3 Sep 1 17:42:52 2022\n"
+        "NW.S.1 { @ Min. different potential NWEL space < 1.40 @\n"
+        "  EXT NWEL < 1.40\n"
+        "}\n"
+    )
+    assert parse_rvdb_ascii(rvdb) == []
+
+
 def test_parse_rvdb_empty_returns_empty(tmp_path: Path):
     rvdb = tmp_path / "out.results"
-    rvdb.write_text("calibre header\nno-rules-here\n")
-    # `no-rules-here` matches our rule-name regex, but has no records under
-    # it, so we expect zero violations.
+    rvdb.write_text("$$$CONTEXT_INFO$$$ 1000\n")
     assert parse_rvdb_ascii(rvdb) == []
 
 
