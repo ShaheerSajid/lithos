@@ -1,0 +1,37 @@
+[project]
+name = "lithos-ingest"
+version = "0.1.0"
+description = "Source-doc loaders, DRC deck parsers, LLM extractor, and DB writer."
+requires-python = ">=3.11"
+dependencies = [
+    "lithos-core",
+    "pdfplumber>=0.10",
+]
+
+[project.scripts]
+lithos-ingest = "lithos_ingest.cli:main"
+
+[project.optional-dependencies]
+# LLM extractor backends. All optional; only needed at ingestion time.
+# The free-tier path is `from_ollama(...)` — needs NO extras (uses stdlib
+# urllib to talk to a local Ollama server). The other adapters carry deps:
+#   pip install 'lithos-ingest[llm]'        — every adapter
+#   pip install 'lithos-ingest[llm-local]'  — local GGUF (llama-cpp-python)
+#   pip install 'lithos-ingest[llm-claude]' — Anthropic API
+llm = [
+    "llama-cpp-python>=0.2",
+    "anthropic>=0.40",
+]
+llm-local = [
+    "llama-cpp-python>=0.2",
+]
+llm-claude = [
+    "anthropic>=0.40",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["lithos_ingest"]

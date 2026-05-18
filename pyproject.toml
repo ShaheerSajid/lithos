@@ -1,0 +1,38 @@
+[project]
+name = "lithos"
+version = "0.1.0"
+description = "PDK-agnostic layout generator with LLM-built rule DB."
+requires-python = ">=3.11"
+readme = "README.md"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+lithos-core   = { workspace = true }
+lithos-ingest = { workspace = true }
+lithos-drc    = { workspace = true }
+lithos-layout = { workspace = true }
+lithos-repair = { workspace = true }
+lithos-rl     = { workspace = true }
+lithos-lvs    = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0",
+]
+
+[tool.pytest.ini_options]
+# importlib mode lets multiple packages each have a `test_smoke.py`
+# without basename collisions in pytest's default rootdir-based import.
+addopts = ["--import-mode=importlib"]
+testpaths = [
+    "packages/lithos-core/tests",
+    "packages/lithos-ingest/tests",
+    "packages/lithos-drc/tests",
+    "packages/lithos-layout/tests",
+    "packages/lithos-repair/tests",
+    "packages/lithos-rl/tests",
+    "packages/lithos-lvs/tests",
+    "tests",
+]
