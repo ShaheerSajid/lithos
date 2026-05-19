@@ -105,9 +105,9 @@ def sd_contact_columns(w_finger_um: float, rules: BootstrapRules) -> int:
     bounded by ``size_um + spacing_um`` plus the per-side enclosure.
     Returns at least 1 even if the math says 0.
     """
-    c_size  = rules.get("contacts.size_um")
-    c_space = rules.get("contacts.spacing_um")
-    enc     = rules.get("contacts.enclosure_in_diff_um")
+    c_size  = rules.get("contact.size_um")
+    c_space = rules.get("contact.spacing_um")
+    enc     = rules.get("contact.enclosure_in_diff_um")
     usable  = w_finger_um - 2 * enc
     if usable < c_size:
         return 1
@@ -125,8 +125,8 @@ def transistor_geom(
     n   = finger_count(w_um, rules, device_type)
     w_f = w_um / n
 
-    c_size = rules.get("contacts.size_um")
-    c_enc  = rules.get("contacts.enclosure_in_diff_um")
+    c_size = rules.get("contact.size_um")
+    c_enc  = rules.get("contact.enclosure_in_diff_um")
     sd     = max(float(dev.get("sd_length_min_um", 0.29)), c_size + 2 * c_enc)
 
     n_cy   = sd_contact_columns(w_f, rules)
@@ -235,15 +235,15 @@ def draw_transistor(
     c = gf.Component(name=_name)
 
     endcap  = rules.get("poly.endcap_over_diff_um")
-    c_size  = rules.get("contacts.size_um")
-    c_space = rules.get("contacts.spacing_um")
-    c_enc   = rules.get("contacts.enclosure_in_diff_um")
-    li_w    = rules.get("li1.width_min_um")
+    c_size  = rules.get("contact.size_um")
+    c_space = rules.get("contact.spacing_um")
+    c_enc   = rules.get("contact.enclosure_in_diff_um")
+    m0_w    = rules.get("m0.width_min_um")
 
     lyr_diff    = rules.layer(dev["diff_layer"])
     lyr_gate    = rules.layer(dev["gate_layer"])
-    lyr_contact = rules.layer("licon1")
-    lyr_li1     = rules.layer("li1")
+    lyr_contact = rules.layer("contact")
+    lyr_m0      = rules.layer("m0")
     lyr_implant = rules.layer(dev["implant_layer"])
 
     # ── Diffusion rectangle (covers all fingers in X; poly endcap in Y) ──
@@ -333,18 +333,18 @@ def draw_transistor(
         for j in range(geom.n_fingers + 1)
     ]
 
-    enc_li_2adj, _enc_li_opp = rules.enclosure("contacts", "enclosure_in_li1")
-    li1_half_w = max(c_size / 2, li_w / 2)
+    enc_m0_2adj, _enc_m0_opp = rules.enclosure("contact", "enclosure_in_m0")
+    m0_half_w = max(c_size / 2, m0_w / 2)
 
-    source_li1_x0: float | None = None
-    drain_li1_x0:  float | None = None
+    source_m0_x0: float | None = None
+    drain_m0_x0:  float | None = None
     _skip = skip_sd or set()
 
     for j, cx in enumerate(sd_x_centres):
         if j == 0:
-            source_li1_x0 = cx
+            source_m0_x0 = cx
         if j == geom.n_fingers:
-            drain_li1_x0 = cx
+            drain_m0_x0 = cx
 
         if j in _skip:
             continue
@@ -359,21 +359,21 @@ def draw_transistor(
                 layer=lyr_contact,
             )
 
-        # Li1 strip — li.5 asymmetric: enc_li_2adj on north+south.
-        li_x0 = cx - li1_half_w
-        li_x1 = cx + li1_half_w
-        li_y0 = min(diff_y0, c_y_centres[0]  - c_size / 2 - enc_li_2adj)
-        li_y1 = max(diff_y1, c_y_centres[-1] + c_size / 2 + enc_li_2adj)
+        # m0 strip — asymmetric enclosure rule on the contact's 2 adjacent edges.
+        m0_x0 = cx - m0_half_w
+        m0_x1 = cx + m0_half_w
+        m0_y0 = min(diff_y0, c_y_centres[0]  - c_size / 2 - enc_m0_2adj)
+        m0_y1 = max(diff_y1, c_y_centres[-1] + c_size / 2 + enc_m0_2adj)
         c.add_polygon(
-            [(li_x0, li_y0), (li_x1, li_y0),
-             (li_x1, li_y1), (li_x0, li_y1)],
-            layer=lyr_li1,
+            [(m0_x0, m0_y0), (m0_x1, m0_y0),
+             (m0_x1, m0_y1), (m0_x0, m0_y1)],
+            layer=lyr_m0,
         )
 
         if j == 0:
-            source_li1_x0 = (li_x0 + li_x1) / 2
+            source_m0_x0 = (m0_x0 + m0_x1) / 2
         if j == geom.n_fingers:
-            drain_li1_x0 = (li_x0 + li_x1) / 2
+            drain_m0_x0 = (m0_x0 + m0_x1) / 2
 
     # ── Ports ───────────────────────────────────────────────────────────
     diff_y_mid = (diff_y0 + diff_y1) / 2
@@ -386,17 +386,17 @@ def draw_transistor(
     )
     c.add_port(
         name="S",
-        center=(source_li1_x0, diff_y_mid),
+        center=(source_m0_x0, diff_y_mid),
         width=geom.w_finger_um,
         orientation=180,
-        layer=lyr_li1,
+        layer=lyr_m0,
     )
     c.add_port(
         name="D",
-        center=(drain_li1_x0, diff_y_mid),
+        center=(drain_m0_x0, diff_y_mid),
         width=geom.w_finger_um,
         orientation=0,
-        layer=lyr_li1,
+        layer=lyr_m0,
     )
 
     return c

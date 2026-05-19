@@ -1,26 +1,35 @@
 """lithos_layout.rules — the bridge between the rule DB and cell generation.
 
 The cell generator code wants semantic accessors: "poly width minimum",
-"contact size", "diff-to-poly enclosure on adjacent edges". Those are
-*per-PDK names that the foundry calls something else* — e.g. SkyWater
+"contact size", "m0 enclosure of the contact cut on adjacent edges". Those
+are *per-PDK names that the foundry calls something else* — e.g. SkyWater
 sky130's "PO.W.1" is what the cell code refers to as ``poly.width_min_um``.
 
-This module is the translation table. Each PDK ships a small
-``bootstrap.yaml`` mapping semantic dotted-keys to canonical rule codes::
+lithos uses a PDK-agnostic metal stack: ``m0``, ``m1``, ``m2``, … with
+``contact`` for poly/diff → m0 cuts and ``via_mX_mY`` for inter-metal
+cuts. The bootstrap mapping (per PDK) translates these abstract names
+to the foundry's rule codes, while :class:`PDKMetadata` translates the
+abstract layer names to (gds_layer, datatype) pairs.
+
+Each PDK ships a small ``bootstrap.yaml`` mapping semantic dotted-keys
+to canonical rule codes::
 
     mapping:
       poly:
         width_min_um:           PO.W.1
         spacing_min_um:         PO.S.1
         endcap_over_diff_um:    PO.E.1
-      contacts:
+      contact:
         size_um:                CO.W.1
         spacing_um:             CO.S.1
         enclosure_in_diff_um:   CO.E.1
-        enclosure_in_li1_um:    CO.E.2
+        enclosure_in_m0_um:     CO.E.2
       diff:
         width_min_um:           DI.W.1
         extension_past_poly_um: DI.E.1
+      m0:
+        width_min_um:           LI.W.1
+        spacing_min_um:         LI.S.1
 
 :class:`BootstrapRules` wraps this mapping + a :class:`lithos_core.RuleDB`
 + a :class:`lithos_core.PDKMetadata` and exposes two surfaces:
@@ -231,6 +240,19 @@ class BootstrapRules:
     @property
     def routing_grid(self) -> float:
         return self.metadata.routing_grid
+
+    @property
+    def m0_is_m1(self) -> bool:
+        """True when m0 and m1 share a GDS (layer, datatype) pair.
+
+        Some foundries collapse the local-interconnect layer (m0) into
+        the first metal layer (m1), which means the m0→m1 cut is a no-op
+        and via cells should only draw the m1 landing pad.
+        """
+        try:
+            return self.layer("m0") == self.layer("m1")
+        except KeyError:
+            return False
 
     # ── Internals ───────────────────────────────────────────────────────
 

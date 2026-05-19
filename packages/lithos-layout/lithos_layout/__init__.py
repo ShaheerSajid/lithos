@@ -4,8 +4,12 @@ The "draw" side. Consumes the bootstrap subset of the rule DB
 (``usage_class = "geometry_primitive"``) via :class:`BootstrapRules` plus
 topology templates to produce candidate GDS for the repair loop to refine.
 
-Current public surface (geometry/dimension math half; GDS emitter lands
-in a follow-up):
+lithos uses a PDK-agnostic metal stack (``m0``, ``m1``, ``m2``, …) with
+``contact`` for poly/diff → m0 cuts and ``via_mX_mY`` for inter-metal
+cuts. The per-PDK YAML maps these abstract layer names to physical
+(gds_layer, datatype) pairs.
+
+Current public surface:
 
 * :class:`BootstrapMapping`, :func:`load_bootstrap_mapping` — per-PDK
   translation from semantic dotted-keys to canonical rule codes.
@@ -13,9 +17,24 @@ in a follow-up):
   and exposes both ``rules.get("poly.width_min_um")`` and the
   ``rules.poly["width_min_um"]`` dict idiom.
 * :class:`TransistorGeom`, :func:`finger_count`, :func:`transistor_geom`,
-  :func:`sd_contact_columns` — pure-data transistor dimensioning.
+  :func:`sd_contact_columns`, :func:`draw_transistor` — single-transistor
+  dimension math + GDS emitter.
+* :mod:`lithos_layout.cells` — atomic via cell factories
+  (``via_poly_m0`` / ``via_m0_m1`` / …) and the tap cell.
+
+The synth loader (topology YAML → typed dataclasses) lands in a follow-up.
 """
 
+from lithos_layout.cells import (
+    draw_tap_cell,
+    via_diff_m0,
+    via_m0_m1,
+    via_m0_m2,
+    via_m1_m2,
+    via_poly_m0,
+    via_poly_m1,
+    via_poly_m2,
+)
 from lithos_layout.rules import (
     BootstrapMapping,
     BootstrapRules,
@@ -38,4 +57,12 @@ __all__ = [
     "finger_count",
     "sd_contact_columns",
     "transistor_geom",
+    "draw_tap_cell",
+    "via_poly_m0",
+    "via_diff_m0",
+    "via_m0_m1",
+    "via_m1_m2",
+    "via_poly_m1",
+    "via_poly_m2",
+    "via_m0_m2",
 ]

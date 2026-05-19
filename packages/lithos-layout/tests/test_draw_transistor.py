@@ -2,10 +2,8 @@
 
 Verifies that the ported polygon construction produces a gdsfactory
 Component with the expected layers populated and the G/S/D ports placed
-correctly. The synthetic DB / metadata / bootstrap mapping is the
-smallest sky130-flavoured set that exercises every code path
-(diffusion, implant, gate, contacts, li1, asymmetric li1 enclosure,
-NPC, N-well for PMOS).
+correctly. The synthetic DB / metadata / bootstrap mapping uses lithos's
+PDK-agnostic m0/contact naming exclusively.
 """
 from __future__ import annotations
 
@@ -32,7 +30,7 @@ from lithos_layout import (
 )
 
 
-# ── Fixtures: a sky130-flavoured synthetic PDK ──────────────────────────────
+# ── Fixtures: a generic m0/contact synthetic PDK ────────────────────────────
 
 def _seeded_db(path: Path) -> RuleDB:
     db = RuleDB(path)
@@ -49,28 +47,28 @@ def _seeded_db(path: Path) -> RuleDB:
         ("DI.E.1",          EnclosureCheck(inner=LayerRef(name="poly"),
                                            outer=LayerRef(name="diff"),
                                            op=">=", threshold_um=0.25)),
-        # contacts
-        ("CO.W.1",          WidthCheck(    target=LayerRef(name="licon1"),   op=">=", threshold_um=0.17)),
-        ("CO.S.1",          SpacingCheck(  layer_a=LayerRef(name="licon1"),  op=">=", threshold_um=0.17)),
-        ("CO.E.D.1",        EnclosureCheck(inner=LayerRef(name="licon1"),
+        # contact (poly/diff → m0 cut)
+        ("CO.W.1",          WidthCheck(    target=LayerRef(name="contact"),  op=">=", threshold_um=0.17)),
+        ("CO.S.1",          SpacingCheck(  layer_a=LayerRef(name="contact"), op=">=", threshold_um=0.17)),
+        ("CO.E.D.1",        EnclosureCheck(inner=LayerRef(name="contact"),
                                            outer=LayerRef(name="diff"),
                                            op=">=", threshold_um=0.04)),
-        ("CO.E.LI.2ADJ",    EnclosureCheck(inner=LayerRef(name="licon1"),
-                                           outer=LayerRef(name="li1"),
+        ("CO.E.M0.2ADJ",    EnclosureCheck(inner=LayerRef(name="contact"),
+                                           outer=LayerRef(name="m0"),
                                            op=">=", threshold_um=0.08,
                                            on_sides="two_adjacent")),
-        ("CO.E.LI.ALL",     EnclosureCheck(inner=LayerRef(name="licon1"),
-                                           outer=LayerRef(name="li1"),
+        ("CO.E.M0.ALL",     EnclosureCheck(inner=LayerRef(name="contact"),
+                                           outer=LayerRef(name="m0"),
                                            op=">=", threshold_um=0.0)),
-        ("CO.SPACE.POLY",   SpacingCheck(  layer_a=LayerRef(name="licon1"),
+        ("CO.SPACE.POLY",   SpacingCheck(  layer_a=LayerRef(name="contact"),
                                            layer_b=LayerRef(name="poly"),
                                            op=">=", threshold_um=0.055)),
-        # li1
-        ("LI.W.1",          WidthCheck(    target=LayerRef(name="li1"),      op=">=", threshold_um=0.17)),
-        ("LI.S.1",          SpacingCheck(  layer_a=LayerRef(name="li1"),     op=">=", threshold_um=0.17)),
+        # m0
+        ("M0.W.1",          WidthCheck(    target=LayerRef(name="m0"),       op=">=", threshold_um=0.17)),
+        ("M0.S.1",          SpacingCheck(  layer_a=LayerRef(name="m0"),      op=">=", threshold_um=0.17)),
         # implant
         ("IMP.E.1",         EnclosureCheck(inner=LayerRef(name="diff"),
-                                           outer=LayerRef(name="nsdm"),
+                                           outer=LayerRef(name="nimplant"),
                                            op=">=", threshold_um=0.125)),
         # n-well
         ("NW.E.PDIFF",      EnclosureCheck(inner=LayerRef(name="diff"),
@@ -91,12 +89,12 @@ def _seeded_db(path: Path) -> RuleDB:
 
 def _metadata(with_npc: bool = True, with_nwell: bool = True) -> PDKMetadata:
     layers = {
-        "poly":   (66, 20),
-        "diff":   (65, 20),
-        "licon1": (66, 44),
-        "li1":    (67, 20),
-        "nsdm":   (93, 44),
-        "psdm":   (94, 20),
+        "poly":     (66, 20),
+        "diff":     (65, 20),
+        "contact":  (66, 44),
+        "m0":       (67, 20),
+        "nimplant": (93, 44),
+        "pimplant": (94, 20),
     }
     if with_nwell:
         layers["nwell"] = (64, 20)
@@ -110,13 +108,13 @@ def _metadata(with_npc: bool = True, with_nwell: bool = True) -> PDKMetadata:
         devices={
             "nmos": {
                 "diff_layer": "diff", "gate_layer": "poly",
-                "implant_layer": "nsdm", "bulk_layer": "pwell",
+                "implant_layer": "nimplant", "bulk_layer": "pwell",
                 "nwell": False, "w_finger_max_um": 5.0,
                 "sd_length_min_um": 0.29,
             },
             "pmos": {
                 "diff_layer": "diff", "gate_layer": "poly",
-                "implant_layer": "psdm", "bulk_layer": "nwell",
+                "implant_layer": "pimplant", "bulk_layer": "nwell",
                 "nwell": True, "w_finger_max_um": 5.0,
                 "sd_length_min_um": 0.29,
             },
@@ -129,12 +127,12 @@ def _mapping(with_optional: bool = True) -> BootstrapMapping:
         "poly.width_min_um":               "PO.W.1",
         "poly.endcap_over_diff_um":        "PO.E.1",
         "diff.width_min_um":               "DI.W.1",
-        "contacts.size_um":                "CO.W.1",
-        "contacts.spacing_um":             "CO.S.1",
-        "contacts.enclosure_in_diff_um":   "CO.E.D.1",
-        "contacts.enclosure_in_li1_2adj_um": "CO.E.LI.2ADJ",
-        "contacts.enclosure_in_li1_um":      "CO.E.LI.ALL",
-        "li1.width_min_um":                "LI.W.1",
+        "contact.size_um":                 "CO.W.1",
+        "contact.spacing_um":              "CO.S.1",
+        "contact.enclosure_in_diff_um":    "CO.E.D.1",
+        "contact.enclosure_in_m0_2adj_um": "CO.E.M0.2ADJ",
+        "contact.enclosure_in_m0_um":      "CO.E.M0.ALL",
+        "m0.width_min_um":                 "M0.W.1",
     }
     if with_optional:
         base["implant.enclosure_of_diff_um"]  = "IMP.E.1"
@@ -178,17 +176,17 @@ def test_returns_gdsfactory_component(tmp_path: Path):
         r.db.close()
 
 
-def test_nmos_has_diff_poly_implant_contacts_li1(tmp_path: Path):
+def test_nmos_has_diff_poly_implant_contacts_m0(tmp_path: Path):
     """All required layers appear on the drawn nmos component."""
     r = _rules(tmp_path)
     try:
         c = draw_transistor(0.52, 0.15, "nmos", r)
         present = _polygons_by_layer(c)
-        assert r.layer("diff")   in present
-        assert r.layer("poly")   in present
-        assert r.layer("licon1") in present
-        assert r.layer("li1")    in present
-        assert r.layer("nsdm")   in present     # nmos implant
+        assert r.layer("diff")     in present
+        assert r.layer("poly")     in present
+        assert r.layer("contact")  in present
+        assert r.layer("m0")       in present
+        assert r.layer("nimplant") in present     # nmos implant
     finally:
         r.db.close()
 
@@ -199,8 +197,8 @@ def test_pmos_adds_nwell(tmp_path: Path):
     try:
         c = draw_transistor(0.52, 0.15, "pmos", r)
         present = _polygons_by_layer(c)
-        assert r.layer("nwell") in present
-        assert r.layer("psdm")  in present      # pmos implant
+        assert r.layer("nwell")    in present
+        assert r.layer("pimplant") in present      # pmos implant
     finally:
         r.db.close()
 
@@ -285,18 +283,18 @@ def test_explicit_n_fingers_override(tmp_path: Path):
 
 # ── skip_sd ────────────────────────────────────────────────────────────────
 
-def test_skip_sd_omits_li1_strips_on_skipped_indices(tmp_path: Path):
-    """Skipping an S/D index leaves no li1 / contact on that region.
+def test_skip_sd_omits_m0_strips_on_skipped_indices(tmp_path: Path):
+    """Skipping an S/D index leaves no m0 / contact on that region.
 
     A 3-finger device has 4 S/D regions. Skipping the two internal ones
-    should drop their li1 strips, leaving 2 li1 strips (source + drain).
+    should drop their m0 strips, leaving 2 m0 strips (source + drain).
     """
     r = _rules(tmp_path)
     try:
         c_full    = draw_transistor(0.6, 0.15, "nmos", r, n_fingers=3)
         c_skipped = draw_transistor(0.6, 0.15, "nmos", r, n_fingers=3, skip_sd={1, 2})
-        li_layer  = r.layer("li1")
-        assert _polygons_by_layer(c_full)[li_layer]    == 4
-        assert _polygons_by_layer(c_skipped)[li_layer] == 2
+        m0_layer  = r.layer("m0")
+        assert _polygons_by_layer(c_full)[m0_layer]    == 4
+        assert _polygons_by_layer(c_skipped)[m0_layer] == 2
     finally:
         r.db.close()

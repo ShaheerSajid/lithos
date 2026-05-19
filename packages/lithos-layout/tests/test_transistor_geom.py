@@ -27,7 +27,7 @@ from lithos_layout import (
 )
 
 
-# ── Shared fixture: a sky130-ish rule set in a synthetic DB ────────────────
+# ── Shared fixture: a generic m0/contact rule set in a synthetic DB ────────
 
 def _rules(tmp_path: Path) -> BootstrapRules:
     db = RuleDB(tmp_path / "rules.db")
@@ -37,9 +37,9 @@ def _rules(tmp_path: Path) -> BootstrapRules:
         ("PO.W.1",   WidthCheck(target=LayerRef(name="poly"), op=">=", threshold_um=0.15)),
         ("PO.E.1",   EnclosureCheck(inner=LayerRef(name="diff"), outer=LayerRef(name="poly"),
                                     op=">=", threshold_um=0.13)),
-        ("CO.W.1",   WidthCheck(target=LayerRef(name="licon1"), op=">=", threshold_um=0.17)),
-        ("CO.S.1",   SpacingCheck(layer_a=LayerRef(name="licon1"), op=">=", threshold_um=0.17)),
-        ("CO.E.D.1", EnclosureCheck(inner=LayerRef(name="licon1"), outer=LayerRef(name="diff"),
+        ("CO.W.1",   WidthCheck(target=LayerRef(name="contact"), op=">=", threshold_um=0.17)),
+        ("CO.S.1",   SpacingCheck(layer_a=LayerRef(name="contact"), op=">=", threshold_um=0.17)),
+        ("CO.E.D.1", EnclosureCheck(inner=LayerRef(name="contact"), outer=LayerRef(name="diff"),
                                     op=">=", threshold_um=0.04)),
         ("DI.W.1",   WidthCheck(target=LayerRef(name="diff"), op=">=", threshold_um=0.15)),
     ]:
@@ -51,7 +51,7 @@ def _rules(tmp_path: Path) -> BootstrapRules:
     metadata = PDKMetadata(
         name="t", version="0",
         layers={"poly": (66, 20), "diff": (65, 20),
-                "licon1": (66, 44), "li1": (67, 20)},
+                "contact": (66, 44), "m0": (67, 20)},
         grid={"manufacturing_um": 0.005},
         drc_decks={},
         devices={
@@ -66,12 +66,12 @@ def _rules(tmp_path: Path) -> BootstrapRules:
         },
     )
     mapping = BootstrapMapping(mapping={
-        "poly.width_min_um":             "PO.W.1",
-        "poly.endcap_over_diff_um":      "PO.E.1",
-        "contacts.size_um":              "CO.W.1",
-        "contacts.spacing_um":           "CO.S.1",
-        "contacts.enclosure_in_diff_um": "CO.E.D.1",
-        "diff.width_min_um":             "DI.W.1",
+        "poly.width_min_um":            "PO.W.1",
+        "poly.endcap_over_diff_um":     "PO.E.1",
+        "contact.size_um":              "CO.W.1",
+        "contact.spacing_um":           "CO.S.1",
+        "contact.enclosure_in_diff_um": "CO.E.D.1",
+        "diff.width_min_um":            "DI.W.1",
     })
     return BootstrapRules(metadata, db, mapping)
 

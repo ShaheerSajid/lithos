@@ -54,39 +54,39 @@ def _seeded_db(path: Path) -> RuleDB:
         Rule(
             code="CO.W.1", category="contact", usage_class="geometry_primitive",
             constraint=Constraint(branches=[ConstraintBranch(
-                check=WidthCheck(target=LayerRef(name="licon1"), op=">=", threshold_um=0.17),
+                check=WidthCheck(target=LayerRef(name="contact"), op=">=", threshold_um=0.17),
             )]),
         ),
         Rule(
             code="CO.S.1", category="contact", usage_class="geometry_primitive",
             constraint=Constraint(branches=[ConstraintBranch(
-                check=SpacingCheck(layer_a=LayerRef(name="licon1"), op=">=", threshold_um=0.17),
+                check=SpacingCheck(layer_a=LayerRef(name="contact"), op=">=", threshold_um=0.17),
             )]),
         ),
         Rule(
             code="CO.E.D.1", category="contact", usage_class="geometry_primitive",
             constraint=Constraint(branches=[ConstraintBranch(
                 check=EnclosureCheck(
-                    inner=LayerRef(name="licon1"), outer=LayerRef(name="diff"),
+                    inner=LayerRef(name="contact"), outer=LayerRef(name="diff"),
                     op=">=", threshold_um=0.04,
                 ),
             )]),
         ),
-        # Asymmetric: 2-adjacent-edge vs all-sides enclosure of contact by li1.
+        # Asymmetric: 2-adjacent-edge vs all-sides enclosure of contact by m0.
         Rule(
-            code="CO.E.LI.2ADJ", category="contact", usage_class="geometry_primitive",
+            code="CO.E.M0.2ADJ", category="contact", usage_class="geometry_primitive",
             constraint=Constraint(branches=[ConstraintBranch(
                 check=EnclosureCheck(
-                    inner=LayerRef(name="licon1"), outer=LayerRef(name="li1"),
+                    inner=LayerRef(name="contact"), outer=LayerRef(name="m0"),
                     op=">=", threshold_um=0.08, on_sides="two_adjacent",
                 ),
             )]),
         ),
         Rule(
-            code="CO.E.LI.ALL", category="contact", usage_class="geometry_primitive",
+            code="CO.E.M0.ALL", category="contact", usage_class="geometry_primitive",
             constraint=Constraint(branches=[ConstraintBranch(
                 check=EnclosureCheck(
-                    inner=LayerRef(name="licon1"), outer=LayerRef(name="li1"),
+                    inner=LayerRef(name="contact"), outer=LayerRef(name="m0"),
                     op=">=", threshold_um=0.0,
                 ),
             )]),
@@ -106,19 +106,19 @@ def _seeded_db(path: Path) -> RuleDB:
 def _metadata(devices: dict | None = None) -> PDKMetadata:
     return PDKMetadata(
         name="t", version="0",
-        layers={"poly": (66, 20), "diff": (65, 20), "licon1": (66, 44), "li1": (67, 20)},
+        layers={"poly": (66, 20), "diff": (65, 20), "contact": (66, 44), "m0": (67, 20)},
         grid={"manufacturing_um": 0.005},
         drc_decks={},
         devices=devices or {
             "nmos": {
                 "diff_layer": "diff", "gate_layer": "poly",
-                "implant_layer": "nsdm", "bulk_layer": "pwell",
+                "implant_layer": "nimplant", "bulk_layer": "pwell",
                 "nwell": False, "w_finger_max_um": 5.0,
                 "sd_length_min_um": 0.29,
             },
             "pmos": {
                 "diff_layer": "diff", "gate_layer": "poly",
-                "implant_layer": "psdm", "bulk_layer": "nwell",
+                "implant_layer": "pimplant", "bulk_layer": "nwell",
                 "nwell": True, "w_finger_max_um": 5.0,
                 "sd_length_min_um": 0.29,
             },
@@ -131,11 +131,11 @@ def _mapping() -> BootstrapMapping:
         "poly.width_min_um":            "PO.W.1",
         "poly.spacing_min_um":          "PO.S.1",
         "poly.endcap_over_diff_um":     "PO.E.1",
-        "contacts.size_um":             "CO.W.1",
-        "contacts.spacing_um":          "CO.S.1",
-        "contacts.enclosure_in_diff_um": "CO.E.D.1",
-        "contacts.enclosure_in_li1_2adj_um": "CO.E.LI.2ADJ",
-        "contacts.enclosure_in_li1_um":      "CO.E.LI.ALL",
+        "contact.size_um":              "CO.W.1",
+        "contact.spacing_um":           "CO.S.1",
+        "contact.enclosure_in_diff_um": "CO.E.D.1",
+        "contact.enclosure_in_m0_2adj_um": "CO.E.M0.2ADJ",
+        "contact.enclosure_in_m0_um":      "CO.E.M0.ALL",
         "diff.width_min_um":            "DI.W.1",
     })
 
@@ -148,7 +148,7 @@ def test_get_resolves_through_mapping(tmp_path: Path):
         r = BootstrapRules(_metadata(), db, _mapping())
         assert r.get("poly.width_min_um")     == 0.15
         assert r.get("poly.spacing_min_um")   == 0.21
-        assert r.get("contacts.size_um")      == 0.17
+        assert r.get("contact.size_um")       == 0.17
         assert r.get("diff.width_min_um")     == 0.15
     finally:
         db.close()
@@ -177,7 +177,7 @@ def test_unmapped_semantic_name_raises(tmp_path: Path):
     try:
         r = BootstrapRules(_metadata(), db, _mapping())
         with pytest.raises(KeyError, match="No bootstrap mapping"):
-            r.get("metal2.width_min_um")
+            r.get("m2.width_min_um")
     finally:
         db.close()
 
@@ -200,9 +200,9 @@ def test_dict_section_works_via_attr(tmp_path: Path):
     db = _seeded_db(tmp_path / "rules.db")
     try:
         r = BootstrapRules(_metadata(), db, _mapping())
-        assert r.poly["width_min_um"]   == 0.15
-        assert r.contacts["size_um"]    == 0.17
-        assert r.diff["width_min_um"]   == 0.15
+        assert r.poly["width_min_um"]    == 0.15
+        assert r.contact["size_um"]      == 0.17
+        assert r.diff["width_min_um"]    == 0.15
     finally:
         db.close()
 
@@ -232,7 +232,7 @@ def test_enclosure_returns_adj2_and_all(tmp_path: Path):
     db = _seeded_db(tmp_path / "rules.db")
     try:
         r = BootstrapRules(_metadata(), db, _mapping())
-        adj, opp = r.enclosure("contacts", "enclosure_in_li1")
+        adj, opp = r.enclosure("contact", "enclosure_in_m0")
         assert adj == 0.08
         assert opp == 0.0
     finally:
@@ -244,10 +244,10 @@ def test_enclosure_symmetric_fallback(tmp_path: Path):
     db = _seeded_db(tmp_path / "rules.db")
     try:
         m = BootstrapMapping(mapping={
-            "contacts.enclosure_in_diff_um": "CO.E.D.1",
+            "contact.enclosure_in_diff_um": "CO.E.D.1",
         })
         r = BootstrapRules(_metadata(), db, m)
-        adj, opp = r.enclosure("contacts", "enclosure_in_diff")
+        adj, opp = r.enclosure("contact", "enclosure_in_diff")
         assert adj == 0.04 and opp == 0.04
     finally:
         db.close()
@@ -289,7 +289,7 @@ mapping:
   poly:
     width_min_um: PO.W.1
     spacing_min_um: PO.S.1
-  contacts:
+  contact:
     size_um: CO.W.1
 """
     p = tmp_path / "bootstrap.yaml"
@@ -298,5 +298,5 @@ mapping:
     assert m.mapping == {
         "poly.width_min_um":   "PO.W.1",
         "poly.spacing_min_um": "PO.S.1",
-        "contacts.size_um":    "CO.W.1",
+        "contact.size_um":     "CO.W.1",
     }
