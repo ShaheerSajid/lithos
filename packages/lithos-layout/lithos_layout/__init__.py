@@ -21,8 +21,8 @@ Current public surface:
   dimension math + GDS emitter.
 * :mod:`lithos_layout.cells` — atomic via cell factories
   (``via_poly_m0`` / ``via_m0_m1`` / …) and the tap cell.
-
-The synth loader (topology YAML → typed dataclasses) lands in a follow-up.
+* :func:`load_template` and the dataclasses in :mod:`lithos_layout.synth`
+  — topology-YAML loader (zero PDK dependency).
 """
 
 from lithos_layout.cells import (
@@ -39,6 +39,20 @@ from lithos_layout.rules import (
     BootstrapMapping,
     BootstrapRules,
     load_bootstrap_mapping,
+)
+from lithos_layout.synth import (
+    AbutmentSpec,
+    CellDimensions,
+    CellTemplate,
+    DeviceSpec,
+    LabelLayerSpec,
+    NetSpec,
+    PlacementDirective,
+    PortSpec,
+    RoutingHint,
+    RoutingSpec,
+    RowPairSpec,
+    load_template,
 )
 from lithos_layout.transistor import (
     TransistorGeom,
@@ -65,4 +79,16 @@ __all__ = [
     "via_poly_m1",
     "via_poly_m2",
     "via_m0_m2",
+    "AbutmentSpec",
+    "CellDimensions",
+    "CellTemplate",
+    "DeviceSpec",
+    "LabelLayerSpec",
+    "NetSpec",
+    "PlacementDirective",
+    "PortSpec",
+    "RoutingHint",
+    "RoutingSpec",
+    "RowPairSpec",
+    "load_template",
 ]
