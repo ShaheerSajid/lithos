@@ -14,7 +14,13 @@ Pipeline (in roadmap order):
   uses it to decide what needs routing.
 * :mod:`lithos_layout.synth.euler` — Euler-path device ordering so
   adjacent transistors share diffusion (smaller, denser cells).
-* placer / router / synthesizer — not yet ported.
+* :mod:`lithos_layout.synth.placer` — resolves floorplan directives
+  (and the named-spacing-rule registry) into global ``(x, y)``
+  device origins.
+* :mod:`lithos_layout.synth.port_resolver` — compass-side port
+  placement on the cell bounding box; emits ``expose_terminal``
+  routing specs for the auto-router.
+* router / auto_router / synthesizer — not yet ported.
 
 This subpackage is intentionally PDK-agnostic. Anything that touches
 the rule DB goes through :class:`lithos_layout.BootstrapRules`; anything
@@ -55,6 +61,24 @@ from lithos_layout.synth.netlist import (
     TerminalRef,
     build_net_graph,
 )
+from lithos_layout.synth.placer import (
+    Placer,
+    PlacedDevice,
+    SPACING_RULES,
+    TerminalGeom,
+    global_diff_y,
+    global_gate_x,
+    global_poly_bottom,
+    global_poly_top,
+    global_sd_x,
+    resolve_spacing_rule,
+    resolve_terminal,
+)
+from lithos_layout.synth.port_resolver import (
+    PortCandidate,
+    generate_expose_specs,
+    resolve_ports,
+)
 
 __all__ = [
     # Loader
@@ -85,4 +109,20 @@ __all__ = [
     "euler_order",
     "euler_path",
     "has_euler_path",
+    # Placer
+    "Placer",
+    "PlacedDevice",
+    "SPACING_RULES",
+    "TerminalGeom",
+    "global_diff_y",
+    "global_gate_x",
+    "global_poly_bottom",
+    "global_poly_top",
+    "global_sd_x",
+    "resolve_spacing_rule",
+    "resolve_terminal",
+    # Port resolver
+    "PortCandidate",
+    "generate_expose_specs",
+    "resolve_ports",
 ]

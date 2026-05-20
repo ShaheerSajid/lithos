@@ -17,7 +17,7 @@ Each step blocks the next unless noted otherwise.
 | - | ----------------------------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1 | Port `cells/standard.py` + `cells/vias.py` + `cells/tap.py`       | **done**   | Includes the project-wide M0/M1/M2 rename. See "Cells port" below.                                                                                             |
 | 2 | Port `synth/loader.py` (topology YAML → typed specs; zero PDK dep) | **done**   | `LabelLayerSpec` fields renamed to `m1`/`m2` with `None` defaults; sky130 magic values removed.                                                                |
-| 3 | Port `synth/placer.py` + `synth/router.py` + `synth/auto_router.py` (+ `synthesizer.py`, `netlist.py`, `port_resolver.py`, `constraints.py`, `euler.py`, `geo/`) | in progress | Foundation modules ported: `constraints.py` (expression eval), `euler.py` (diffusion ordering), `netlist.py` (net graph). Remaining: placer (~725 LoC), router (~1652 LoC), auto_router (~874 LoC), port_resolver (~233 LoC), synthesizer (~745 LoC). `geo/` (1948 LoC of RL-flavoured agent code) deferred — looks more like step 6 material. |
+| 3 | Port `synth/placer.py` + `synth/router.py` + `synth/auto_router.py` (+ `synthesizer.py`, `netlist.py`, `port_resolver.py`, `constraints.py`, `euler.py`, `geo/`) | in progress | Foundation + placement ported: `constraints.py`, `euler.py`, `netlist.py`, `placer.py`, `port_resolver.py`. Remaining: router (~1652 LoC), auto_router (~874 LoC), synthesizer (~745 LoC). `geo/` (1948 LoC of RL-flavoured agent code) deferred — looks more like step 6 material. |
 | 4 | Port `templates/cells/*.yaml`                                     | **done**   | 12 files at `packages/lithos-layout/templates/cells/`. All sky130 layer names (`met1`/`met2`/`li1`/`mcon`/`licon1`) rewritten to canonical `m0`/`m1`/`m2`/`contact`/`via_m0_m1`; `label_layers` blocks removed (caller fills from PDK metadata). |
 | 5 | Port `repair/` heuristic primitives into `lithos-repair`           | pending    | See [REPAIR_ARCHITECTURE.md](REPAIR_ARCHITECTURE.md) for the redesigned plan. Old code is heuristic; new design is LLM understanding + closed action vocab + learned policy. |
 | 6 | Port `rl/` (env + policy + training) into `lithos-rl`              | pending    | Lives in `layout_gen` at commit `23cb778` on branch `drc-repair-engine`. See "RL phase status" below.                                                          |
@@ -125,8 +125,27 @@ Side fix in `rules.py`: :class:`_Section` gained ``__getattr__`` so
 ``rules.poly["width_min_um"]``). This was needed for the expression
 evaluator's eval namespace.
 
-Remaining for step 3: placer → port_resolver → router → auto_router →
-synthesizer. Multi-session.
+Placement modules now ported:
+
+- `placer.py` — :class:`Placer` resolves placement directives (also
+  the legacy pair-mode and the stacked row-pair mode) into global
+  ``(x, y)`` device origins. Ships a small registry of named spacing
+  rules (``min_diff_spacing``, ``inter_cell_gap``,
+  ``cross_couple_wiring``, ``min_well_separation``) keyed on the
+  canonical lithos sections (``rules.m0`` rather than sky130's
+  ``rules.li1``).
+- `port_resolver.py` — compass-side port placement on the cell
+  bounding box. Now hosts :class:`PortCandidate` (small dataclass
+  shared with the router-to-be).
+
+Tests: `tests/test_synth_placer.py` (16 tests, including a real
+``BootstrapRules`` fixture and an end-to-end inverter placement) and
+`tests/test_synth_port_resolver.py` (10 tests on the compass-side
+mapping, the candidate-picker, and the expose-spec generator).
+Suite total: 468 passing.
+
+Remaining for step 3: router → auto_router → synthesizer.
+Multi-session.
 
 ## Templates port (step 4, completed)
 
