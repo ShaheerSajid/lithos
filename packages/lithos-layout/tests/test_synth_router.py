@@ -39,9 +39,16 @@ def _rules(tmp_path: Path, *, m0_collapsed: bool = False) -> BootstrapRules:
     db.open()
     db.set_pdk(name="t", version="0", ingested_at="2026-05-20T00:00:00Z")
     for code, check in [
+        ("PO.W.1",   WidthCheck(target=LayerRef(name="poly"),
+                                op=">=", threshold_um=0.15)),
         ("PO.E.1",   EnclosureCheck(inner=LayerRef(name="diff"),
                                     outer=LayerRef(name="poly"),
                                     op=">=", threshold_um=0.13)),
+        ("DI.E.1",   EnclosureCheck(inner=LayerRef(name="diff"),
+                                    outer=LayerRef(name="diff"),
+                                    op=">=", threshold_um=0.25)),
+        ("CO.W.1",   WidthCheck(target=LayerRef(name="contact"),
+                                op=">=", threshold_um=0.17)),
         ("M0.W.1",   WidthCheck(target=LayerRef(name="m0"), op=">=", threshold_um=0.17)),
         ("M0.S.1",   SpacingCheck(layer_a=LayerRef(name="m0"), op=">=", threshold_um=0.17)),
         ("M1.W.1",   WidthCheck(target=LayerRef(name="m1"), op=">=", threshold_um=0.20)),
@@ -62,11 +69,14 @@ def _rules(tmp_path: Path, *, m0_collapsed: bool = False) -> BootstrapRules:
         devices={},
     )
     mapping = BootstrapMapping(mapping={
-        "poly.endcap_over_diff_um": "PO.E.1",
-        "m0.width_min_um":   "M0.W.1",
-        "m0.spacing_min_um": "M0.S.1",
-        "m1.width_min_um":   "M1.W.1",
-        "m1.spacing_min_um": "M1.S.1",
+        "poly.width_min_um":            "PO.W.1",
+        "poly.endcap_over_diff_um":     "PO.E.1",
+        "diff.extension_past_poly_um":  "DI.E.1",
+        "contact.size_um":              "CO.W.1",
+        "m0.width_min_um":              "M0.W.1",
+        "m0.spacing_min_um":            "M0.S.1",
+        "m1.width_min_um":              "M1.W.1",
+        "m1.spacing_min_um":            "M1.S.1",
     })
     return BootstrapRules(md, db, mapping)
 
@@ -206,3 +216,128 @@ class TestHorizontalPowerRail:
         placed = {"N": _placed_device()}
         Router(r).route(gf.Component(), [], placed)
         assert _drawn_poly_contacts == {}
+
+
+# ── shared_gate_poly ────────────────────────────────────────────────────────
+
+def _paired_devices(tmp_path: Path) -> tuple[BootstrapRules, dict[str, PlacedDevice]]:
+    """Build a minimal rules + N (bottom) / P (top) placement."""
+    rules = _rules(tmp_path)
+    # NMOS at (0, 0), PMOS stacked above with a 0.2 µm Y gap.
+    n = _placed_device(name="N", dev_type="nmos", x=0.0, y=0.0,
+                       total_x=1.0, total_y=0.6)
+    p = _placed_device(name="P", dev_type="pmos", x=0.0, y=0.8,
+                       total_x=1.0, total_y=0.6)
+    return rules, {"N": n, "P": p}
+
+
+class TestSharedGatePoly:
+    def test_emits_two_port_candidates(self, tmp_path: Path):
+        rules, placed = _paired_devices(tmp_path)
+        spec = RoutingSpec(net="IN", style="shared_gate_poly",
+                           layer="poly", path=["N.G", "P.G"])
+        cands = Router(rules).route(gf.Component(), [spec], placed)
+        assert len(cands) == 2
+        assert {c.location_key for c in cands} == {
+            "IN_gate_left_edge_mid_y", "gate_left_edge_mid_y",
+        }
+        for c in cands:
+            assert c.net == "IN"
+            assert c.layer == "poly"
+            assert c.orientation == 180
+
+    def test_writes_poly_polygons(self, tmp_path: Path):
+        rules, placed = _paired_devices(tmp_path)
+        comp = gf.Component()
+        spec = RoutingSpec(net="IN", style="shared_gate_poly",
+                           layer="poly", path=["N.G", "P.G"])
+        Router(rules).route(comp, [spec], placed)
+        polys = comp.get_polygons(by="tuple")
+        assert rules.layer("poly") in polys, polys.keys()
+
+    def test_too_short_path_no_op(self, tmp_path: Path):
+        rules, placed = _paired_devices(tmp_path)
+        spec = RoutingSpec(net="X", style="shared_gate_poly",
+                           layer="poly", path=["N.G"])
+        cands = Router(rules).route(gf.Component(), [spec], placed)
+        assert cands == []
+
+
+# ── intra_device_sd ─────────────────────────────────────────────────────────
+
+class TestIntraDeviceSD:
+    def _multifinger(self, tmp_path: Path) -> tuple[BootstrapRules,
+                                                    dict[str, PlacedDevice]]:
+        rules = _rules(tmp_path)
+        # 3-finger device: S/D indices 0, 1, 2, 3 → S at 0,2 ; D at 1,3.
+        dev = PlacedDevice(
+            name = "N",
+            spec = DeviceSpec(name="N", template="planar_mosfet",
+                              device_type="nmos", terminals={}),
+            geom = TransistorGeom(
+                w_um=1.5, l_um=0.15, device_type="nmos", n_fingers=3,
+                w_finger_um=0.5, sd_length_um=0.2, n_contacts_y=1,
+                total_x_um=1.05, total_y_um=0.76,
+            ),
+            x = 0.0, y = 0.0,
+        )
+        return rules, {"N": dev}
+
+    def test_drain_strap_drawn(self, tmp_path: Path):
+        rules, placed = self._multifinger(tmp_path)
+        comp = gf.Component()
+        spec = RoutingSpec(
+            net="OUT", style="intra_device_sd", layer="m0",
+            path=["N.D"], extra={"terminal": "D"},
+        )
+        Router(rules).route(comp, [spec], placed)
+        polys = comp.get_polygons(by="tuple")
+        assert rules.layer("m0") in polys
+
+    def test_single_strip_no_op(self, tmp_path: Path):
+        rules = _rules(tmp_path)
+        # 1-finger device: only one S and one D strip — no strap needed.
+        placed = {"N": _placed_device(name="N", total_x=1.0, total_y=0.6)}
+        comp = gf.Component()
+        spec = RoutingSpec(
+            net="OUT", style="intra_device_sd", layer="m0",
+            path=["N.D"], extra={"terminal": "D"},
+        )
+        Router(rules).route(comp, [spec], placed)
+        assert rules.layer("m0") not in comp.get_polygons(by="tuple")
+
+    def test_empty_path_no_op(self, tmp_path: Path):
+        rules = _rules(tmp_path)
+        placed = {"N": _placed_device(name="N", total_x=1.0, total_y=0.6)}
+        spec = RoutingSpec(net="X", style="intra_device_sd",
+                           layer="m0", path=[])
+        Router(rules).route(gf.Component(), [spec], placed)
+
+
+# ── m0_bridge ───────────────────────────────────────────────────────────────
+
+class TestM0Bridge:
+    def _two_devices(self, tmp_path: Path) -> tuple[BootstrapRules,
+                                                    dict[str, PlacedDevice]]:
+        rules = _rules(tmp_path)
+        a = _placed_device(name="A", x=0.0, y=0.0, total_x=1.0, total_y=0.6)
+        b = _placed_device(name="B", x=2.0, y=0.0, total_x=1.0, total_y=0.6)
+        return rules, {"A": a, "B": b}
+
+    def test_bridge_emits_candidate_and_polygon(self, tmp_path: Path):
+        rules, placed = self._two_devices(tmp_path)
+        comp = gf.Component()
+        spec = RoutingSpec(net="Q", style="m0_bridge", layer="m0",
+                           path=["A.D", "B.S"])
+        [c] = Router(rules).route(comp, [spec], placed)
+        assert c.net == "Q"
+        assert c.layer == "m0"
+        assert c.location_key == "Q_bridge_center"
+        assert rules.layer("m0") in comp.get_polygons(by="tuple")
+
+    def test_too_short_path_no_op(self, tmp_path: Path):
+        rules, placed = self._two_devices(tmp_path)
+        spec = RoutingSpec(net="Q", style="m0_bridge", layer="m0",
+                           path=["A.D"])
+        cands = Router(rules).route(gf.Component(), [spec], placed)
+        assert cands == []

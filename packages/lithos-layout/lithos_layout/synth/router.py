@@ -28,19 +28,20 @@ Or use the decorator form at module level::
     @_style("my_style")
     def _my_style(...): ...
 
-Initial slice
--------------
-
-This is the *first* slice of the router port. Currently registered:
+Currently registered
+--------------------
 
 * ``horizontal_power_rail`` — full-width VDD / GND rail (top or bottom).
+* ``shared_gate_poly``     — vertical poly bridge tying NMOS and PMOS
+  gates of the same net (e.g. inverter ``IN``).
+* ``intra_device_sd``      — horizontal strap connecting all S or D
+  fingers of a single multi-finger device.
+* ``m0_bridge``            — narrow m0 strip between two S/D terminals
+  (used for SRAM Q / Q_ nodes and similar local taps).
 
-Remaining style handlers (shared-gate-poly, drain-bridge,
-intra-device-sd, source-to-rail, m0-bridge, cross-couple, vertical
-bus, expose-terminal, …) land in subsequent commits. The Router
-itself, the registry, the geometry helpers, and the general
-:func:`draw_via_stack` primitive are wired up so each handler can
-land independently.
+Remaining style handlers (drain-bridge, source-to-rail, gate-to-drain,
+expose-terminal, cross-couple-gate, vertical-bus, cross-row-connect,
+poly-stub-m1-bus, vertical-m2-bus) land in subsequent commits.
 """
 from __future__ import annotations
 
@@ -54,7 +55,12 @@ from lithos_layout.stack          import via_stack_between
 from lithos_layout.synth.loader   import RoutingSpec
 from lithos_layout.synth.placer   import (
     PlacedDevice,
+    global_diff_y,
     global_gate_x,
+    global_poly_bottom,
+    global_poly_top,
+    global_sd_x,
+    resolve_terminal,
 )
 from lithos_layout.synth.port_resolver import PortCandidate
 
@@ -408,5 +414,200 @@ def _horizontal_power_rail(
         y            = (y0 + y1) / 2,
         layer        = route_layer,
         width        = cell_w,
+        orientation  = 90,
+    )]
+
+
+# ── shared_gate_poly ────────────────────────────────────────────────────────
+
+@_style("shared_gate_poly")
+def _shared_gate_poly(
+    comp:   Any,
+    spec:   RoutingSpec,
+    placed: dict[str, PlacedDevice],
+    rules:  BootstrapRules,
+) -> list[PortCandidate]:
+    """Vertical poly bridge from the NMOS gate top to the PMOS gate bottom.
+
+    Expected path: ``[N.G, P.G]``. For multi-finger devices, bridges
+    *every* gate-finger pair and ties them together with a horizontal
+    poly strap in the N-P gap.
+    """
+    if len(spec.path) < 2:
+        return []
+    n_name = spec.path[0].split(".")[0]
+    p_name = spec.path[1].split(".")[0]
+    dev_n  = placed[n_name]
+    dev_p  = placed[p_name]
+
+    lyr       = rules.layer("poly")
+    n_fingers = max(dev_n.geom.n_fingers, dev_p.geom.n_fingers)
+    y_bot     = global_poly_top(dev_n)
+    y_top     = global_poly_bottom(dev_p)
+
+    poly_w_min = rules.poly.get("width_min_um", 0.15) if hasattr(rules.poly, "get") \
+                 else rules.get("poly.width_min_um")
+    gap        = max(y_top - y_bot, poly_w_min)
+    gate_mid_y = (y_bot + y_top) / 2
+    strap_hy   = poly_w_min / 2
+
+    leftmost_x0:  float | None = None
+    rightmost_x1: float | None = None
+    for i in range(n_fingers):
+        if i < dev_n.geom.n_fingers:
+            ngx0, ngx1 = global_gate_x(dev_n, i)
+            if y_top > y_bot:
+                _rect(comp, ngx0, ngx1, y_bot, y_top, lyr)
+            if leftmost_x0 is None:
+                leftmost_x0 = ngx0
+            rightmost_x1 = ngx1
+        if i < dev_p.geom.n_fingers:
+            pgx0, pgx1 = global_gate_x(dev_p, i)
+            if y_top > y_bot:
+                _rect(comp, pgx0, pgx1, y_bot, y_top, lyr)
+            if leftmost_x0 is None:
+                leftmost_x0 = pgx0
+            rightmost_x1 = max(rightmost_x1 or pgx1, pgx1)
+
+    if n_fingers > 1 and leftmost_x0 is not None:
+        _rect(
+            comp, leftmost_x0, rightmost_x1,
+            gate_mid_y - strap_hy, gate_mid_y + strap_hy, lyr,
+        )
+
+    gx0, _ = global_gate_x(dev_n, 0)
+    return [
+        PortCandidate(
+            net=spec.net, location_key=f"{spec.net}_gate_left_edge_mid_y",
+            x=gx0, y=gate_mid_y, layer="poly", width=gap, orientation=180,
+        ),
+        PortCandidate(
+            net=spec.net, location_key="gate_left_edge_mid_y",
+            x=gx0, y=gate_mid_y, layer="poly", width=gap, orientation=180,
+        ),
+    ]
+
+
+# ── intra_device_sd ─────────────────────────────────────────────────────────
+
+@_style("intra_device_sd")
+def _intra_device_sd(
+    comp:   Any,
+    spec:   RoutingSpec,
+    placed: dict[str, PlacedDevice],
+    rules:  BootstrapRules,
+) -> list[PortCandidate]:
+    """Tie all S (or all D) strips of one multi-finger device together.
+
+    Expected path: ``[Dev.D]`` or ``[Dev.S]``. ``spec.extra["terminal"]``
+    selects ``"D"`` (drain strips at odd j) or ``"S"`` (source strips at
+    even j). The terminal index is flipped when the device's
+    ``sd_flip`` is set.
+
+    Draws a horizontal strap on ``spec.layer`` (default ``m0``)
+    spanning every selected strip's X range, at the diffusion centre
+    Y. When ``spec.layer`` is above ``m0``, drops a via stack at each
+    strip so the upper-layer strap is bonded down to m0.
+    """
+    if not spec.path:
+        return []
+
+    dev_name  = spec.path[0].split(".")[0]
+    term      = (spec.extra or {}).get("terminal", "D")
+    dev       = placed[dev_name]
+    n_fingers = dev.geom.n_fingers
+    is_drain  = (term == "D")
+
+    # j=0 → source, j=1 → drain, j=2 → source, …  (sd_flip reverses parity)
+    sd_indices: list[int] = []
+    for j in range(n_fingers + 1):
+        j_is_drain = (j % 2 == 1) if not dev.spec.sd_flip else (j % 2 == 0)
+        if j_is_drain == is_drain:
+            sd_indices.append(j)
+    if len(sd_indices) < 2:
+        return []
+
+    route_layer = spec.layer or "m0"
+    lyr         = rules.layer(route_layer)
+    try:
+        route_w_min = rules.section(route_layer).get("width_min_um", 0.0) or 0.0
+    except Exception:                                # pragma: no cover
+        route_w_min = 0.0
+    try:
+        m0_w_min = rules.section("m0").get("width_min_um", 0.0) or 0.0
+    except Exception:                                # pragma: no cover
+        m0_w_min = 0.0
+    route_w = route_w_min or m0_w_min or 0.17
+    rhw     = route_w / 2
+
+    dy0, dy1 = global_diff_y(dev, rules)
+    d_cy     = (dy0 + dy1) / 2
+
+    all_x0: list[float] = []
+    all_x1: list[float] = []
+    for j in sd_indices:
+        sx0, sx1 = global_sd_x(dev, j, rules)
+        all_x0.append(sx0)
+        all_x1.append(sx1)
+        # Bond every strip when the strap sits on a layer above m0.
+        if route_layer != "m0":
+            s_cx = (sx0 + sx1) / 2
+            draw_via_stack(comp, rules, s_cx, d_cy, "m0", route_layer)
+
+    strap_x0 = min(all_x0)
+    strap_x1 = max(all_x1)
+    _rect(comp, strap_x0, strap_x1, d_cy - rhw, d_cy + rhw, lyr)
+    return []
+
+
+# ── m0_bridge ───────────────────────────────────────────────────────────────
+
+@_style("m0_bridge")
+def _m0_bridge(
+    comp:   Any,
+    spec:   RoutingSpec,
+    placed: dict[str, PlacedDevice],
+    rules:  BootstrapRules,
+) -> list[PortCandidate]:
+    """Horizontal m0 strip between two S/D terminals at the same Y band.
+
+    Expected path: ``[DevA.Term, DevB.Term]``. Used for SRAM Q / Q_
+    style local taps where two devices' source/drain strips need a
+    short bridge but no via stack to a higher metal.
+    """
+    if len(spec.path) < 2:
+        return []
+
+    t0 = resolve_terminal(spec.path[0], placed, rules)
+    t1 = resolve_terminal(spec.path[1], placed, rules)
+
+    route_layer = spec.layer or "m0"
+    lyr         = rules.layer(route_layer)
+    try:
+        route_w = rules.section(route_layer).get("width_min_um", 0.17) or 0.17
+    except Exception:                                # pragma: no cover
+        route_w = 0.17
+
+    # Bridge spans the gap between the two terminals' inside edges.
+    if t0.x1 < t1.x0:
+        bridge_x0, bridge_x1 = t0.x1, t1.x0
+    else:
+        bridge_x0, bridge_x1 = t1.x1, t0.x0
+
+    y_mid = (max(t0.y0, t1.y0) + min(t0.y1, t1.y1)) / 2
+    y0    = y_mid - route_w / 2
+    y1    = y_mid + route_w / 2
+
+    if bridge_x1 > bridge_x0:
+        _rect(comp, bridge_x0, bridge_x1, y0, y1, lyr)
+
+    mid_x = (bridge_x0 + bridge_x1) / 2
+    return [PortCandidate(
+        net          = spec.net,
+        location_key = f"{spec.net}_bridge_center",
+        x            = mid_x,
+        y            = y_mid,
+        layer        = route_layer,
+        width        = route_w,
         orientation  = 90,
     )]
