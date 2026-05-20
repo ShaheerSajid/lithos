@@ -17,7 +17,11 @@ from lithos_core import (
     SpacingCheck,
     WidthCheck,
 )
-from lithos_layout                 import BootstrapMapping, BootstrapRules
+from lithos_layout                 import (
+    BootstrapMapping,
+    BootstrapRules,
+    synthesize_cell,
+)
 from lithos_layout.synth           import (
     SynthResult,
     Synthesizer,
@@ -206,6 +210,99 @@ class TestSynthesizeInverter:
         result = self._synth(tmp_path, routing_specs=specs)
         nets = {c.net for c in result.candidates}
         assert "GND" in nets
+
+
+# ── DRC integration ────────────────────────────────────────────────────────
+
+class _FakeDRCRunner:
+    """Minimal stand-in for :class:`lithos_drc.DRCRunner` used in tests.
+
+    Records the GDS path it was given and returns a caller-supplied list
+    of violations — the real KLayout backend isn't exercised here so the
+    test stays hermetic.
+    """
+    tool_name = "fake"
+
+    def __init__(self, violations=None):
+        self._violations = list(violations or [])
+        self.calls = []                              # paths it was called with
+
+    def run(self, gds_path, cell_name=None):
+        self.calls.append(gds_path)
+        return list(self._violations)
+
+
+class TestSynthesizerDRC:
+    def _synth(self, tmp_path: Path, drc_runner=None):
+        rules = _rules(tmp_path)
+        tpl   = load_template("inverter")
+        return Synthesizer(rules).synthesize(
+            tpl,
+            params={"w": 0.52, "l": 0.15},
+            drc_runner=drc_runner,
+        )
+
+    def test_no_runner_leaves_violations_empty(self, tmp_path: Path):
+        result = self._synth(tmp_path)
+        assert result.violations == []
+
+    def test_clean_runner_yields_empty_violations(self, tmp_path: Path):
+        runner = _FakeDRCRunner(violations=[])
+        result = self._synth(tmp_path, drc_runner=runner)
+        assert result.violations == []
+        assert len(runner.calls) == 1
+        # Synth wrote to a temp path, ran the runner, and cleaned up.
+        assert not runner.calls[0].exists()
+
+    def test_dirty_runner_violations_propagate(self, tmp_path: Path):
+        from lithos_drc import DRCViolation
+        v = DRCViolation(rule="PO.S.1", description="poly spacing", layer="poly",
+                         severity="error", x=0.5, y=0.2, value=0.18)
+        result = self._synth(tmp_path, drc_runner=_FakeDRCRunner([v]))
+        assert result.violations == [v]
+
+
+# ── tap_cell (device-free template) ─────────────────────────────────────────
+
+class TestSynthesizeTapCell:
+    def test_tap_cell_synthesizes(self, tmp_path: Path):
+        """The device-free shortcut routes through ``draw_tap_cell``."""
+        rules  = _rules(tmp_path)
+        tpl    = load_template("tap_cell")
+        result = Synthesizer(rules).synthesize(tpl)
+        assert result.placed == {}                   # short-circuited
+        polys = result.component.get_polygons(by="tuple")
+        # Tap cell hits at least m0, m1, contact, nwell, nimplant, pimplant.
+        for layer in ("m0", "m1", "contact", "nwell", "nimplant", "pimplant"):
+            assert rules.layer(layer) in polys, layer
+
+    def test_tap_cell_via_wrapper(self, tmp_path: Path):
+        result = synthesize_cell("tap_cell", _rules(tmp_path))
+        assert isinstance(result, SynthResult)
+        assert result.placed == {}
+
+
+# ── synthesize_cell() convenience wrapper ──────────────────────────────────
+
+class TestSynthesizeCell:
+    def test_wrapper_synthesizes_inverter(self, tmp_path: Path):
+        """The top-level wrapper takes a bare template name and returns a
+        :class:`SynthResult` identical in shape to the Synthesizer path."""
+        rules  = _rules(tmp_path)
+        result = synthesize_cell("inverter", rules, {"w": 0.52, "l": 0.15})
+        assert isinstance(result, SynthResult)
+        assert set(result.placed) == {"N", "P"}
+
+    def test_wrapper_threads_drc_runner(self, tmp_path: Path):
+        """``drc_runner`` should flow through to the inner Synthesizer."""
+        from lithos_drc import DRCViolation
+        v = DRCViolation(rule="X", description="bogus", layer="m0",
+                         severity="warning")
+        result = synthesize_cell(
+            "inverter", _rules(tmp_path), {"w": 0.52, "l": 0.15},
+            drc_runner=_FakeDRCRunner([v]),
+        )
+        assert result.violations == [v]
 
 
 # ── expose_terminal (router) ────────────────────────────────────────────────

@@ -31,7 +31,7 @@ the planner (useful for tests or hand-tuned cells).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing      import Any
+from typing      import TYPE_CHECKING, Any
 
 from lithos_layout.rules                import BootstrapRules
 from lithos_layout.transistor           import draw_transistor
@@ -42,6 +42,9 @@ from lithos_layout.synth.placer         import Placer, PlacedDevice
 from lithos_layout.synth.port_resolver  import generate_expose_specs, resolve_ports
 from lithos_layout.synth.router         import Router
 
+if TYPE_CHECKING:                                    # pragma: no cover
+    from lithos_drc import DRCRunner, DRCViolation
+
 
 @dataclass
 class SynthResult:
@@ -50,24 +53,29 @@ class SynthResult:
     Attributes
     ----------
     component :
-        Final :class:`gdsfactory.Component` (no DRC verification —
-        the skeleton does not iterate to clean).
+        Final :class:`gdsfactory.Component`.
     placed :
         Device name → :class:`PlacedDevice` map.
     params :
         Parameter dict used for placement / sizing.
     iterations :
-        Always ``1`` for the skeleton (no DRC loop yet).
+        Always ``1`` for the skeleton (no repair loop yet —
+        :mod:`lithos_repair` will own iteration).
     candidates :
         Port candidates emitted by the router style handlers. Useful
         for downstream tooling that wants to re-resolve ports against
         a different policy.
+    violations :
+        DRC violations from the last :class:`~lithos_drc.DRCRunner`
+        pass. Empty when no ``drc_runner`` was supplied to
+        :meth:`Synthesizer.synthesize`.
     """
     component:   Any
     placed:      dict[str, PlacedDevice]
     params:      dict[str, Any]
     iterations:  int = 1
     candidates:  list = field(default_factory=list)
+    violations:  list["DRCViolation"] = field(default_factory=list)
 
 
 class Synthesizer:
@@ -89,6 +97,7 @@ class Synthesizer:
         routing_specs: list[RoutingSpec]   | None = None,
         *,
         component_name: str | None = None,
+        drc_runner:    "DRCRunner | None" = None,
     ) -> SynthResult:
         """Build a fully-instantiated cell from a template.
 
@@ -110,12 +119,26 @@ class Synthesizer:
         component_name :
             Optional override for the :class:`gdsfactory.Component`
             name. Defaults to ``template.name``.
+        drc_runner :
+            Optional :class:`~lithos_drc.DRCRunner`. When supplied the
+            synthesizer writes the component to a temporary GDS, runs
+            the backend, and attaches the resulting violations to
+            :attr:`SynthResult.violations`. No repair loop yet —
+            iteration belongs to :mod:`lithos_repair`.
 
         Returns
         -------
         SynthResult
         """
         _activate_pdk()
+
+        # ── Device-free templates (tap cells, etc.) ──────────────────
+        # Templates with no devices bypass the placer/router pipeline
+        # entirely. Today this only covers the shipped ``tap_cell``
+        # template, which the dedicated :func:`draw_tap_cell` factory
+        # already emits with VDD/GND ports.
+        if not template.devices:
+            return self._synthesize_device_free(template, drc_runner)
 
         # ── Placement ─────────────────────────────────────────────────
         placer = Placer(self.rules, params)
@@ -163,15 +186,61 @@ class Synthesizer:
             comp, template, net_graph, placed, candidates, self.rules,
         )
 
+        # ── DRC (optional) ───────────────────────────────────────────
+        violations: list = []
+        if drc_runner is not None:
+            violations = _run_drc(comp, drc_runner)
+
         return SynthResult(
             component  = comp,
             placed     = placed,
             params     = dict(params or {}),
             candidates = candidates,
+            violations = violations,
+        )
+
+    def _synthesize_device_free(
+        self,
+        template:   CellTemplate,
+        drc_runner: "DRCRunner | None",
+    ) -> SynthResult:
+        """Synthesize a template that contains no transistor devices.
+
+        Today this is the tap cell — :func:`draw_tap_cell` already
+        emits the full geometry plus VDD/GND ports. We return its
+        component as-is and optionally DRC it.
+        """
+        from lithos_layout.cells import draw_tap_cell
+        comp = draw_tap_cell(self.rules)
+        violations: list = []
+        if drc_runner is not None:
+            violations = _run_drc(comp, drc_runner)
+        return SynthResult(
+            component  = comp,
+            placed     = {},
+            params     = {},
+            violations = violations,
         )
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
+
+def _run_drc(comp: Any, runner: "DRCRunner") -> list:
+    """Write ``comp`` to a temp GDS and run ``runner`` against it.
+
+    The temp file is removed once the runner returns. Returns the list
+    of :class:`~lithos_drc.DRCViolation` objects the backend produced.
+    """
+    import tempfile
+    from pathlib import Path
+    with tempfile.NamedTemporaryFile(suffix=".gds", delete=False) as f:
+        tmp = Path(f.name)
+    try:
+        comp.write_gds(str(tmp))
+        return list(runner.run(tmp))
+    finally:
+        tmp.unlink(missing_ok=True)
+
 
 def _activate_pdk() -> None:
     """Ensure gdsfactory has an active PDK so Components can be drawn."""

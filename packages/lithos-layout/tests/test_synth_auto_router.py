@@ -422,26 +422,33 @@ class TestPhaseHHints:
 # ── Track allocator helper ──────────────────────────────────────────────────
 
 class TestSynthesizeAllTemplates:
-    """End-to-end synthesis smoke test for every shipped template that
-    declares devices (``tap_cell`` has none and uses a different schema)."""
+    """End-to-end synthesis smoke test for every shipped template."""
 
-    TEMPLATES = (
+    TEMPLATES_TRANSISTOR = (
         "inverter", "nand2", "nand3", "nor2", "nor3",
         "aoi21", "oai21", "buffer", "row_driver",
         "bit_cell_6t", "dido",
     )
 
-    @pytest.mark.parametrize("name", TEMPLATES)
-    def test_template_synthesizes(self, tmp_path: Path, name: str):
+    @pytest.mark.parametrize("name", TEMPLATES_TRANSISTOR)
+    def test_transistor_template_synthesizes(self, tmp_path: Path, name: str):
         rules    = _rules(tmp_path)
         template = load_template(name)
         result   = Synthesizer(rules).synthesize(
             template, params={"w": 0.52, "l": 0.15},
         )
         polys = result.component.get_polygons(by="tuple")
-        # Every shipped cell exercises at least poly, diff, contact, m0, m1.
+        # Every transistor cell exercises at least poly, diff, contact, m0, m1.
         for layer in ("poly", "diff", "contact", "m0", "m1"):
             assert rules.layer(layer) in polys, f"{name}: missing {layer}"
+
+    def test_tap_cell_synthesizes(self, tmp_path: Path):
+        """The device-free tap_cell uses a short-circuit path."""
+        rules  = _rules(tmp_path)
+        result = Synthesizer(rules).synthesize(load_template("tap_cell"))
+        polys = result.component.get_polygons(by="tuple")
+        for layer in ("contact", "m0", "m1", "nwell"):
+            assert rules.layer(layer) in polys, layer
 
     def test_bit_cell_6t_emits_upper_metal(self, tmp_path: Path):
         """6T bit cell hits m2 (cross-couple + BL stripes)."""
