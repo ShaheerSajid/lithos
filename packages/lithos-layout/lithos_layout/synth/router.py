@@ -44,10 +44,14 @@ Currently registered
   rail via :func:`draw_via_stack` and an upper-layer strap.
 * ``expose_terminal``      — exposes a device terminal as a port
   without drawing any routing geometry.
+* ``gate_to_drain``        — same-row gate-to-drain route through the
+  N-P gap: poly-contact stub on the gate side, horizontal m0 (or
+  upper-layer) trunk to the drain X, then vertical down/up to the
+  drain S/D centre. Handles AOI/OAI stage chaining.
 
-Remaining style handlers (gate-to-drain, cross-couple-gate,
-vertical-bus, cross-row-connect, poly-stub-m1-bus, vertical-m2-bus)
-land in subsequent commits.
+Remaining style handlers (cross-couple-gate, vertical-bus,
+cross-row-connect, poly-stub-m1-bus, vertical-m2-bus) land in
+subsequent commits.
 """
 from __future__ import annotations
 
@@ -891,3 +895,171 @@ def _expose_terminal(
         width        = width,
         orientation  = orientation,
     )]
+
+
+# ── gate_to_drain ───────────────────────────────────────────────────────────
+
+@_style("gate_to_drain")
+def _gate_to_drain(
+    comp:   Any,
+    spec:   RoutingSpec,
+    placed: dict[str, PlacedDevice],
+    rules:  BootstrapRules,
+) -> list[PortCandidate]:
+    """Same-row gate ↔ drain route through the N-P gap.
+
+    Expected path: ``[Dev_A.G, Dev_B.D]``. Draws an explicit poly
+    contact (cut + poly pad + m0 pad) at the gate's poly endcap and
+    runs an m0 (or upper-layer) trunk from there to the drain S/D
+    centre, then vertically into the drain diffusion. Used by AOI21 /
+    OAI21 / cross-couple chains where one stage's output drives the
+    next stage's gate without going through a higher metal.
+
+    ``spec.layer`` defaults to ``m0``. When set higher (e.g. ``m1``
+    for crossing-avoidance), a via stack is dropped at each end so
+    the trunk lives on the requested layer.
+    """
+    if len(spec.path) < 2:
+        return []
+
+    gate_name  = spec.path[0].split(".")[0]
+    drain_name = spec.path[1].split(".")[0]
+    gate_dev   = placed[gate_name]
+    drain_dev  = placed[drain_name]
+    is_nmos_gate = gate_dev.spec.device_type == "nmos"
+
+    # ── Gate poly position ───────────────────────────────────────────
+    gx0, gx1 = global_gate_x(gate_dev, 0)
+    gate_cx  = (gx0 + gx1) / 2
+
+    # ── Drain S/D position ───────────────────────────────────────────
+    j_d = 0 if drain_dev.spec.sd_flip else 1
+    dx0, dx1 = global_sd_x(drain_dev, j_d, rules)
+    drain_cx = (dx0 + dx1) / 2
+
+    # ── Contact sizing ──────────────────────────────────────────────
+    c_size        = rules.contact["size_um"]
+    ch            = c_size / 2
+    poly_enc      = rules.contact.get("enclosure_in_poly_um", 0.05)
+    poly_enc_2adj = rules.contact.get("enclosure_in_poly_2adj_um", poly_enc)
+
+    m0_enc_2adj = rules.m0.get("enclosure_of_contact_2adj_um", 0.08)
+    m0_enc      = rules.m0.get("enclosure_of_contact_um", 0.0)
+    m0_w_min    = rules.m0.get("width_min_um", 0.17)
+    m0_sp       = rules.m0.get("spacing_min_um", 0.17)
+
+    # ── Contact Y: just above/below the poly endcap ──────────────────
+    pc_half_y = ch + poly_enc_2adj
+    if is_nmos_gate:
+        pc_y = global_poly_top(gate_dev) + pc_half_y
+    else:
+        pc_y = global_poly_bottom(gate_dev) - pc_half_y
+
+    # ── Contact X: shifted toward the connecting drain ──────────────
+    # The poly contact sits between two S/D strips. The m0 pad must
+    # clear the strip on the far side from the drain so the trunk
+    # doesn't short an adjacent net's S/D.
+    m0_enc_route = max(ch + m0_enc_2adj, m0_w_min / 2)
+    m0_enc_far   = max(ch + m0_enc_2adj, m0_w_min / 2)
+    m0_hy_val    = max(ch + m0_enc,      m0_w_min / 2)
+
+    pc_x = gate_cx
+    drain_is_left = drain_cx < gate_cx
+
+    if drain_is_left:
+        m0_hx_left  = m0_enc_route   # toward drain
+        m0_hx_right = m0_enc_far     # away from drain
+    else:
+        m0_hx_left  = m0_enc_far
+        m0_hx_right = m0_enc_route
+
+    # Shift contact toward the drain until the far-side m0 edge
+    # clears the nearest opposite-side S/D strip.
+    n_fingers = gate_dev.geom.n_fingers
+    for j in range(n_fingers + 1):
+        sdx0, sdx1 = global_sd_x(gate_dev, j, rules)
+        sd_cx = (sdx0 + sdx1) / 2
+        if drain_is_left and sd_cx > gate_cx:
+            max_pc_x = sdx0 - m0_sp - m0_hx_right
+            pc_x = min(pc_x, max_pc_x)
+            break
+        if not drain_is_left and sd_cx < gate_cx:
+            min_pc_x = sdx1 + m0_sp + m0_hx_left
+            pc_x = max(pc_x, min_pc_x)
+            break
+
+    # Snap contact centre to manufacturing grid.
+    _grid = rules.mfg_grid
+    if _grid > 0:
+        pc_x = round(round(pc_x / _grid) * _grid, 6)
+        pc_y = round(round(pc_y / _grid) * _grid, 6)
+
+    # ── Draw poly contact (skip if another route already laid one) ──
+    contact_key = (round(gate_cx, 4), "poly_contact")
+    prev = _drawn_poly_contacts.get(contact_key)
+
+    lyr_poly    = rules.layer("poly")
+    lyr_contact = rules.layer("contact")
+    lyr_m0      = rules.layer("m0")
+
+    poly_pad_hx = ch + poly_enc
+    poly_pad_hy = ch + poly_enc_2adj
+
+    if prev is not None:
+        pc_x, pc_y = prev
+    else:
+        _drawn_poly_contacts[contact_key] = (pc_x, pc_y)
+        # 1. Contact cut
+        _rect(comp, pc_x - ch, pc_x + ch, pc_y - ch, pc_y + ch, lyr_contact)
+        # 2. Poly pad
+        _rect(comp, pc_x - poly_pad_hx, pc_x + poly_pad_hx,
+                    pc_y - poly_pad_hy, pc_y + poly_pad_hy, lyr_poly)
+        # 3. m0 pad — asymmetric: 2adj toward route, min elsewhere
+        _rect(comp, pc_x - m0_hx_left, pc_x + m0_hx_right,
+                    pc_y - m0_hy_val,  pc_y + m0_hy_val, lyr_m0)
+
+    # 4. Gate poly stub: connect transistor poly edge to the contact pad
+    if is_nmos_gate:
+        poly_top = global_poly_top(gate_dev)
+        _rect(comp, gx0, gx1, poly_top, pc_y + poly_pad_hy, lyr_poly)
+    else:
+        poly_bot = global_poly_bottom(gate_dev)
+        _rect(comp, gx0, gx1, pc_y - poly_pad_hy, poly_bot, lyr_poly)
+
+    # ── Trunk on spec.layer ──────────────────────────────────────────
+    route_layer = spec.layer or "m0"
+    lyr_route   = rules.layer(route_layer)
+    try:
+        route_w = rules.section(route_layer).get("width_min_um", 0.0) or m0_w_min
+    except Exception:                                # pragma: no cover
+        route_w = m0_w_min
+    rhw = route_w / 2
+
+    route_y      = pc_y
+    dd_y0, dd_y1 = global_diff_y(drain_dev, rules)
+    dd_cy        = (dd_y0 + dd_y1) / 2
+
+    # Bond contact-side pad to the trunk layer when routing above m0.
+    if route_layer != "m0":
+        draw_via_stack(comp, rules, pc_x, pc_y, "m0", route_layer)
+
+    # Horizontal: contact pad → drain X
+    _rect(comp,
+          min(pc_x - m0_hx_left,  drain_cx - rhw),
+          max(pc_x + m0_hx_right, drain_cx + rhw),
+          route_y - rhw, route_y + rhw, lyr_route)
+
+    # Vertical: trunk → drain S/D centre
+    if is_nmos_gate:
+        _rect(comp, drain_cx - rhw, drain_cx + rhw,
+                    dd_cy, route_y + rhw, lyr_route)
+    else:
+        _rect(comp, drain_cx - rhw, drain_cx + rhw,
+                    route_y - rhw, dd_cy, lyr_route)
+
+    # Bond trunk back down at the drain when routing above m0.
+    if route_layer != "m0":
+        draw_via_stack(comp, rules, drain_cx, dd_cy,
+                       route_layer, "m0", direction="vertical")
+
+    return []

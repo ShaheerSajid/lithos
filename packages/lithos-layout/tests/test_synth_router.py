@@ -422,6 +422,105 @@ class TestSourceToRail:
         assert cands == []
 
 
+# ── gate_to_drain ───────────────────────────────────────────────────────────
+
+class TestGateToDrain:
+    """Same-row gate→drain through the N-P gap (AOI/OAI stage chaining)."""
+
+    def _two_devices_same_row(
+        self, tmp_path: Path, dev_type: str = "nmos",
+    ) -> tuple[BootstrapRules, dict[str, PlacedDevice]]:
+        rules = _rules(tmp_path)
+        # A: gate device at x=0. B: drain device at x=2.0 (to the right of A).
+        a = _placed_device(name="A", dev_type=dev_type,
+                           x=0.0, y=0.0, total_x=1.0, total_y=0.6)
+        b = _placed_device(name="B", dev_type=dev_type,
+                           x=2.0, y=0.0, total_x=1.0, total_y=0.6)
+        return rules, {"A": a, "B": b}
+
+    def test_m0_route_emits_poly_contact_and_m0_trunk(self, tmp_path: Path):
+        """Default ``spec.layer == m0`` → contact + poly pad + m0 trunk."""
+        rules, placed = self._two_devices_same_row(tmp_path)
+        _drawn_poly_contacts.clear()
+        comp = gf.Component()
+        spec = RoutingSpec(net="X", style="gate_to_drain", layer="m0",
+                           path=["A.G", "B.D"])
+        cands = Router(rules).route(comp, [spec], placed)
+        assert cands == []   # handler emits no port candidates
+        polys = comp.get_polygons(by="tuple")
+        # Poly contact pieces + m0 trunk are all on these three layers.
+        assert rules.layer("contact") in polys
+        assert rules.layer("poly")    in polys
+        assert rules.layer("m0")      in polys
+
+    def test_drain_left_of_gate_routes_leftward(self, tmp_path: Path):
+        """When drain X < gate X, the m0 trunk extends to the left."""
+        rules = _rules(tmp_path)
+        # Swap positions: B (drain) at x=0, A (gate) at x=2.0.
+        a = _placed_device(name="A", x=2.0, y=0.0, total_x=1.0, total_y=0.6)
+        b = _placed_device(name="B", x=0.0, y=0.0, total_x=1.0, total_y=0.6)
+        _drawn_poly_contacts.clear()
+        comp = gf.Component()
+        spec = RoutingSpec(net="X", style="gate_to_drain", layer="m0",
+                           path=["A.G", "B.D"])
+        Router(rules).route(comp, [spec], {"A": a, "B": b})
+        # m0 trunk must extend from gate (around x=2.5) to drain (around x=0.2).
+        polys = comp.get_polygons(by="tuple").get(rules.layer("m0"), [])
+        xs = [pt.x / 1000.0 for poly in polys for pt in poly.each_point_hull()]
+        assert xs and min(xs) < 0.5 and max(xs) > 2.0
+
+    def test_pmos_gate_routes_downward(self, tmp_path: Path):
+        """PMOS gate: poly contact + trunk sit *below* the device."""
+        rules, placed = self._two_devices_same_row(tmp_path, dev_type="pmos")
+        # Push PMOS up so the trunk has room below.
+        placed["A"].y = 2.0
+        placed["B"].y = 2.0
+        _drawn_poly_contacts.clear()
+        comp = gf.Component()
+        spec = RoutingSpec(net="X", style="gate_to_drain", layer="m0",
+                           path=["A.G", "B.D"])
+        Router(rules).route(comp, [spec], placed)
+        polys = comp.get_polygons(by="tuple").get(rules.layer("m0"), [])
+        # Trunk Y must be below the PMOS poly bottom (y=2.0).
+        ys = [pt.y / 1000.0 for poly in polys for pt in poly.each_point_hull()]
+        assert ys and min(ys) < 2.0
+
+    def test_m1_route_drops_via_stacks(self, tmp_path: Path):
+        """``spec.layer == m1`` → handler emits via stacks at both ends."""
+        rules = _rules_with_via(tmp_path)
+        a = _placed_device(name="A", x=0.0, y=0.0, total_x=1.0, total_y=0.6)
+        b = _placed_device(name="B", x=2.0, y=0.0, total_x=1.0, total_y=0.6)
+        _drawn_poly_contacts.clear()
+        comp = gf.Component()
+        spec = RoutingSpec(net="X", style="gate_to_drain", layer="m1",
+                           path=["A.G", "B.D"])
+        Router(rules).route(comp, [spec], {"A": a, "B": b})
+        polys = comp.get_polygons(by="tuple")
+        assert rules.layer("m1")        in polys
+        assert rules.layer("via_m0_m1") in polys
+
+    def test_shared_contact_dedup(self, tmp_path: Path):
+        """Two routes hitting the same gate reuse the existing poly contact."""
+        rules, placed = self._two_devices_same_row(tmp_path)
+        _drawn_poly_contacts.clear()
+        comp = gf.Component()
+        spec1 = RoutingSpec(net="X", style="gate_to_drain", layer="m0",
+                            path=["A.G", "B.D"])
+        spec2 = RoutingSpec(net="X", style="gate_to_drain", layer="m0",
+                            path=["A.G", "B.D"])
+        Router(rules).route(comp, [spec1, spec2], placed)
+        # _drawn_poly_contacts must hold exactly one entry for A's gate.
+        keyed = [k for k in _drawn_poly_contacts if k[1] == "poly_contact"]
+        assert len(keyed) == 1
+
+    def test_too_short_path_no_op(self, tmp_path: Path):
+        rules, placed = self._two_devices_same_row(tmp_path)
+        spec = RoutingSpec(net="X", style="gate_to_drain", layer="m0",
+                           path=["A.G"])
+        cands = Router(rules).route(gf.Component(), [spec], placed)
+        assert cands == []
+
+
 def _rules_with_via(tmp_path: Path) -> BootstrapRules:
     """Variant of ``_rules`` with via_m0_m1 keys so draw_via_stack works."""
     rules = _rules(tmp_path)
