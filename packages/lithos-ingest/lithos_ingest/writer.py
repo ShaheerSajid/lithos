@@ -26,6 +26,7 @@ from typing import Iterable, Optional
 from lithos_core.categories import CategoryConfig
 from lithos_core.db import Rule, RuleDB
 from lithos_core.fix import FixMetadata
+from lithos_core.ir import Constraint, ConstraintBranch
 
 from lithos_ingest.chunker import Chunk
 from lithos_ingest.joiner import JoinResult, join_rules, usage_class_from_constraint
@@ -41,6 +42,93 @@ __all__ = [
 ]
 
 
+def _merge_duplicate_rule(
+    db: RuleDB,
+    new_rule: Rule,
+    parsed: ParsedRule,
+    stats: dict[str, int],
+) -> None:
+    """Merge a duplicate-code arrival into the existing DB row.
+
+    Appends ``new_rule.constraint.branches`` onto the existing rule's
+    constraint (deduplicating identical branches) and concatenates the
+    deck-block text in :class:`rule_source` so all variant bodies are
+    preserved verbatim for human review.
+
+    When the existing rule has no constraint (no-branch), the new
+    rule's constraint replaces it. When both are no-branch, nothing
+    changes except the deck-block concatenation.
+    """
+    existing = db.get_rule(new_rule.code)
+    if existing is None:
+        # Shouldn't happen — caller said the code was seen — but be safe.
+        stats["duplicate_codes_skipped"] += 1
+        return
+
+    merged_branches: list[ConstraintBranch] = []
+    if existing.constraint is not None:
+        merged_branches.extend(existing.constraint.branches)
+    if new_rule.constraint is not None:
+        for b in new_rule.constraint.branches:
+            if b not in merged_branches:
+                merged_branches.append(b)
+
+    derived = {}
+    raw_text_parts: list[str] = []
+    deck_dialect = "svrf"
+    if existing.constraint is not None:
+        derived.update(existing.constraint.derived_layers)
+        deck_dialect = existing.constraint.deck_dialect or deck_dialect
+        if existing.constraint.raw_deck_text:
+            raw_text_parts.append(existing.constraint.raw_deck_text)
+    if new_rule.constraint is not None:
+        for k, v in new_rule.constraint.derived_layers.items():
+            derived.setdefault(k, v)
+        if new_rule.constraint.raw_deck_text:
+            raw_text_parts.append(new_rule.constraint.raw_deck_text)
+
+    merged_constraint = Constraint(
+        derived_layers = derived,
+        branches       = merged_branches,
+        deck_dialect   = deck_dialect,
+        raw_deck_text  = "\n\n".join(raw_text_parts) if raw_text_parts else "",
+    ) if (merged_branches or derived or raw_text_parts) else existing.constraint
+
+    merged = Rule(
+        code         = existing.code,
+        category     = existing.category,
+        usage_class  = existing.usage_class,
+        short_desc   = existing.short_desc or new_rule.short_desc,
+        constraint   = merged_constraint,
+        fix_metadata = existing.fix_metadata or new_rule.fix_metadata,
+        provenance   = {**existing.provenance, "variant_count":
+                        existing.provenance.get("variant_count", 1) + 1},
+        confidence   = existing.confidence,
+        needs_review = existing.needs_review or new_rule.needs_review,
+    )
+    db.upsert_rule(merged)
+
+    # Concatenate deck-block text so every variant body is reachable.
+    new_deck_block = parsed.deck_block or ""
+    if new_deck_block:
+        # Re-fetch the existing rule_source to merge deck_block.
+        # Cheap because the DB is local SQLite.
+        existing_block = ""
+        row = db._c().execute(
+            "SELECT deck_block FROM rule_source WHERE code = ?",
+            (existing.code,),
+        ).fetchone()
+        if row and row[0]:
+            existing_block = row[0]
+        combined = f"{existing_block}\n\n{new_deck_block}" if existing_block else new_deck_block
+        db.set_source(
+            code       = existing.code,
+            deck_block = combined,
+            deck_title = parsed.title or None,
+        )
+    stats["duplicate_codes_merged"] += 1
+
+
 def _write_one(
     db: RuleDB,
     result: JoinResult,
@@ -54,9 +142,16 @@ def _write_one(
     Real foundry decks contain two kinds of duplication that we have to
     tolerate during ingestion:
 
-    1. **Duplicate rule codes** — typically the same code defined in two
-       ``#IFDEF`` branches we collapse. First-wins; subsequent rows are
-       skipped with a warning counter in ``stats``.
+    1. **Duplicate rule codes** — typically the same code defined in
+       multiple ``#IFDEF`` branches (process-variant overrides such as
+       GP / LP / ULP). The branches' bodies are *all* meaningful — they
+       describe alternative constraint shapes the runtime picks
+       between based on PDK options. We merge subsequent rules' check
+       expressions into the existing rule's :attr:`Constraint.branches`
+       (deduplicating identical branches) instead of dropping them.
+       Predicate tracking — *which* ``#IFDEF`` each branch came from —
+       is a follow-up; for now the predicates stay empty and the
+       branches are stored as alternatives.
     2. **Duplicate title-as-alias** — the human description is shared
        across copy-pasted per-layer rules (e.g. one ``"Wide Metal ..."``
        for ``AMS.1.M1`` through ``AMS.1.M5``). The foundry code itself
@@ -66,7 +161,7 @@ def _write_one(
     rule = result.rule
 
     if rule.code in code_seen:
-        stats["duplicate_codes_skipped"] += 1
+        _merge_duplicate_rule(db, rule, parsed, stats)
         return
     code_seen.add(rule.code)
 
@@ -158,6 +253,7 @@ def parsed_rules_to_db(
     code_seen: set[str] = set()
     stats: dict[str, int] = {
         "duplicate_codes_skipped":   0,
+        "duplicate_codes_merged":    0,
         "ambiguous_aliases_skipped": 0,
     }
     count = 0
@@ -168,9 +264,15 @@ def parsed_rules_to_db(
         if len(code_seen) > before:
             count += 1
 
-    if stats["duplicate_codes_skipped"] or stats["ambiguous_aliases_skipped"]:
+    if stats["duplicate_codes_skipped"] or stats["duplicate_codes_merged"] \
+            or stats["ambiguous_aliases_skipped"]:
         import sys as _sys
         msg = []
+        if stats["duplicate_codes_merged"]:
+            msg.append(
+                f"{stats['duplicate_codes_merged']} duplicate rule codes "
+                f"merged into variant branches"
+            )
         if stats["duplicate_codes_skipped"]:
             msg.append(
                 f"{stats['duplicate_codes_skipped']} duplicate rule codes "

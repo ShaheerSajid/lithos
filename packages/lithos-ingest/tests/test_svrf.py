@@ -167,10 +167,10 @@ def test_empty_input():
     assert parse_svrf("// only comments\n# nothing else\n") == []
 
 
-def test_tsmc_style_bare_name_block():
+def test_bare_name_block_real_deck_shapes():
     """Real Calibre decks use ``NAME { @ desc body }`` (no quoted name).
 
-    Sample patterns drawn from the TSMC180 deck:
+    Representative patterns:
       * ``INT <layer> < t``      → WidthCheck (single-layer INT = width)
       * ``EXT <a> <b> < t``      → SpacingCheck cross-layer
       * ``ENC <inner> <outer> < t`` → EnclosureCheck
@@ -202,6 +202,46 @@ PP.R.1_NP.R.1 { @ PP and NP not allowed to overlap
     pp_chk = by_code["PP.R.1_NP.R.1"].constraint.branches[0].check
     assert isinstance(pp_chk, ExistenceCheck)
     assert pp_chk.must_be_empty is True
+
+
+def test_colon_suffixed_bare_name_block():
+    """``NAME:SUFFIX { ... }`` keeps the full ``NAME:SUFFIX`` as the code.
+
+    Some foundry decks scope a rule with a per-layer or per-severity
+    suffix joined by ``:`` (e.g. ``VIA1.R.4:M2``, ``MIM.X:ERROR``). The
+    lexer splits the colon out, so without explicit glue every
+    ``…:M2`` rule would collapse onto the bare code ``M2``. This test
+    pins the fix.
+    """
+    src = """\
+VIA1.R.4:M1 { @ Two-via rule for M1
+  EXT M1 < 0.1
+}
+VIA1.R.4:M2 { @ Two-via rule for M2
+  EXT M2 < 0.12
+}
+OPT.X:ERROR { @ Mutually exclusive options
+  PP AND NP
+}
+"""
+    rules = parse_svrf(src)
+    codes = [r.code for r in rules]
+    assert codes == ["VIA1.R.4:M1", "VIA1.R.4:M2", "OPT.X:ERROR"], codes
+    # Each rule keeps its own constraint (no collapse onto a shared code).
+    by_code = {r.code: r for r in rules}
+    assert by_code["VIA1.R.4:M1"].constraint.branches[0].check.threshold_um == 0.1
+    assert by_code["VIA1.R.4:M2"].constraint.branches[0].check.threshold_um == 0.12
+
+
+def test_multi_colon_bare_name_block():
+    """Chains like ``A:B:C { ... }`` survive (rare but real)."""
+    src = """\
+RR:AR:SP:PO.S.2 { @ Recommended gate space in same OD
+  EXT POS2_GATE_W < 0.2
+}
+"""
+    [rule] = parse_svrf(src)
+    assert rule.code == "RR:AR:SP:PO.S.2"
 
 
 def test_existence_check_for_bare_layer_body():
@@ -274,3 +314,288 @@ def test_deck_block_text_preserved():
     assert "RULECHECK" in block
     assert "metal2 minimum width" in block
     assert "WIDTH met2" in block
+
+
+# ── VARIABLE-resolved thresholds + new check verbs ──────────────────────────
+
+def test_variable_resolved_threshold():
+    """Real foundry decks declare numeric thresholds via VARIABLE NAME VALUE
+    and reference them in rule bodies (``EXT a b < NAME ABUT < 90``).
+    The parser must pre-scan VARIABLE declarations into a symbol table
+    so these rules still structure with the right number.
+    """
+    src = """\
+VARIABLE  NW_S_5  0.16
+NW.S.5 { @ Space to PW STRAP >= ^NW_S_5 um
+  EXT NWi PPOD < NW_S_5 ABUT < 90 SINGULAR REGION
+}
+"""
+    [rule] = parse_svrf(src)
+    from lithos_core.ir import SpacingCheck
+    chk = rule.constraint.branches[0].check
+    assert isinstance(chk, SpacingCheck)
+    assert chk.threshold_um == 0.16
+    # Comparator is inverted: deck says "violation if < 0.16", rule says ">= 0.16".
+    assert chk.op == ">="
+
+
+def test_define_resolved_threshold():
+    """``#DEFINE NAME <num>`` (rare but legal) also resolves."""
+    src = """\
+#DEFINE PO_W_1 0.09
+PO.W.1 { @ Minimum poly width
+  WIDTH PO < PO_W_1
+}
+"""
+    [rule] = parse_svrf(src)
+    chk = rule.constraint.branches[0].check
+    assert chk.threshold_um == 0.09
+
+
+def test_unresolvable_identifier_threshold_falls_back():
+    """If the threshold IDENT isn't in the symbol table, the rule still
+    parses but ends up no-branch (parser declined the check shape)."""
+    src = """\
+X.W.1 { @ Width
+  WIDTH X < UNDECLARED_VAR
+}
+"""
+    [rule] = parse_svrf(src)
+    assert rule.code == "X.W.1"
+    assert rule.constraint.branches == []
+
+
+def test_angle_check():
+    """``ANGLE <layer> <cmp> <num> <cmp> <num>`` — angle-bounds check."""
+    src = """\
+G.3:DNW { @ Shapes must be orthogonal or on a 45 degree angle.
+  ANGLE DNW >0 <45
+}
+"""
+    [rule] = parse_svrf(src)
+    from lithos_core.ir import ExistenceCheck, LayerRef
+    chk = rule.constraint.branches[0].check
+    assert isinstance(chk, ExistenceCheck)
+    assert isinstance(chk.target, LayerRef)
+    assert chk.target.name == "DNW"
+
+
+def test_offgrid_check():
+    """``OFFGRID <layer> <grid>`` — off-grid violation."""
+    src = """\
+G.1:DNWi { @ grid must be integer multiple
+  OFFGRID DNWi 5
+}
+"""
+    [rule] = parse_svrf(src)
+    from lithos_core.ir import ExistenceCheck, LayerRef
+    chk = rule.constraint.branches[0].check
+    assert isinstance(chk, ExistenceCheck)
+    assert chk.target.name == "DNWi"
+
+
+def test_density_check_with_threshold():
+    """``DENSITY <layer> <region> <cmp> <num>`` — area-fraction check."""
+    src = """\
+OD.DN.1 { @ Min OD density
+  DENSITY OD CHIP < 0.2
+}
+"""
+    [rule] = parse_svrf(src)
+    from lithos_core.ir import DensityCheck
+    chk = rule.constraint.branches[0].check
+    assert isinstance(chk, DensityCheck)
+    # Violation if density < 0.2 → rule wants >= 0.2 → min_ratio = 0.2.
+    assert chk.min_ratio == 0.2
+    assert chk.max_ratio is None
+
+
+def test_density_check_upper_bound():
+    src = """\
+OD.DN.2 { @ Max OD density
+  DENSITY OD CHIP > 0.9
+}
+"""
+    [rule] = parse_svrf(src)
+    chk = rule.constraint.branches[0].check
+    assert chk.max_ratio == 0.9
+    assert chk.min_ratio is None
+
+
+def test_enclose_rectangle_check():
+    """``ENCLOSE RECTANGLE <layer> <args>`` — shape-enclosure check."""
+    src = """\
+VARIABLE OD_S_1 0.12
+VARIABLE OD_S_3_L 0.2
+OD.S.3 { @ Space of two ODs
+  OD_SPACE = EXT Wide_OD < 0.2 OPPOSITE REGION
+  ENCLOSE RECTANGLE OD_SPACE OD_S_1 OD_S_3_L
+}
+"""
+    [rule] = parse_svrf(src)
+    from lithos_core.ir import ExistenceCheck, LayerRef
+    chk = rule.constraint.branches[0].check
+    assert isinstance(chk, ExistenceCheck)
+    assert isinstance(chk.target, LayerRef)
+    assert chk.target.name == "OD_SPACE"
+
+
+def test_copy_check_promotes_layer_to_violation_set():
+    """``COPY <layer>`` rule body emits an ExistenceCheck on the layer."""
+    src = """\
+LPG.OPTION:ERROR { @ Mutually exclusive options
+  COPY CHIPx
+}
+"""
+    [rule] = parse_svrf(src)
+    from lithos_core.ir import ExistenceCheck, LayerRef
+    chk = rule.constraint.branches[0].check
+    assert isinstance(chk, ExistenceCheck)
+    assert isinstance(chk.target, LayerRef)
+    assert chk.target.name == "CHIPx"
+
+
+def test_recovery_does_not_eat_following_check():
+    """Regression: when an assignment leaves dangling tokens on its line
+    (e.g. unmodelled SVRF modifiers like GOOD), the parser must still
+    pick up the check on the *next* line instead of bailing out of the
+    whole rule body.
+    """
+    src = """\
+VARIABLE CO_EN_4 0.020
+CO.EN.3__CO.EN.4 { @ Enclosure
+  X = RECTANGLE ENCLOSURE CO POLYs ABUT >0 < 90 SINGULAR GOOD CO_EN_4 OPPOSITE
+  ENC X POLYs < CO_EN_4 ABUT < 90 SINGULAR REGION
+}
+"""
+    [rule] = parse_svrf(src)
+    from lithos_core.ir import EnclosureCheck
+    assert rule.code == "CO.EN.3__CO.EN.4"
+    chk = rule.constraint.branches[0].check
+    assert isinstance(chk, EnclosureCheck)
+    assert chk.threshold_um == 0.020
+
+
+# ── Numeric-expression thresholds (Phase 2) ─────────────────────────────────
+
+def test_numeric_expression_threshold_multiplication():
+    """Threshold can be a math expression: `var * var`."""
+    src = """\
+VARIABLE A 0.05
+VARIABLE B 0.10
+TEST.W { @ test
+  EXT M1 < A * B
+}
+"""
+    [rule] = parse_svrf(src)
+    chk = rule.constraint.branches[0].check
+    assert chk.threshold_um == pytest.approx(0.005, rel=1e-9)
+
+
+def test_numeric_expression_threshold_addition():
+    src = """\
+VARIABLE A 0.05
+TEST.W { @ test
+  EXT M1 < A + 0.002
+}
+"""
+    [rule] = parse_svrf(src)
+    chk = rule.constraint.branches[0].check
+    assert chk.threshold_um == pytest.approx(0.052)
+
+
+def test_numeric_expression_with_parens():
+    """The manual's own example (page 72): `3 * (GRID + 6)`."""
+    src = """\
+VARIABLE GRID 0.005
+TEST.W { @ test
+  EXT M1 < 3 * (GRID + 6)
+}
+"""
+    [rule] = parse_svrf(src)
+    chk = rule.constraint.branches[0].check
+    assert chk.threshold_um == pytest.approx(18.015)
+
+
+def test_math_function_in_threshold():
+    """Math functions from Table 2-4 — MAX/MIN with two args."""
+    src = """\
+VARIABLE A 0.05
+VARIABLE B 0.10
+TEST.W { @ test
+  EXT M1 < MAX(A, B)
+}
+"""
+    [rule] = parse_svrf(src)
+    chk = rule.constraint.branches[0].check
+    assert chk.threshold_um == pytest.approx(0.10)
+
+
+def test_undefined_identifier_in_expression_is_recoverable():
+    """If a VARIABLE reference can't resolve, the rule falls back to
+    no-branch (not a hard crash)."""
+    src = """\
+TEST.W { @ test
+  EXT M1 < UNDEFINED_VAR
+}
+"""
+    [rule] = parse_svrf(src)
+    assert rule.code == "TEST.W"
+    assert rule.constraint.branches == []
+
+
+# ── Digit-prefixed layer names (manual page 67) ──────────────────────────────
+
+def test_digit_prefixed_layer_name():
+    """Real foundry decks use layer names like `25_18V_GATE_W`."""
+    src = """\
+VARIABLE WIDTH_LIMIT 0.18
+RULE.X { @ test
+  INT 25_18V_GATE_W < WIDTH_LIMIT
+}
+"""
+    [rule] = parse_svrf(src)
+    chk = rule.constraint.branches[0].check
+    # Single-layer INT → WidthCheck on the digit-prefixed layer.
+    from lithos_core.ir import WidthCheck, LayerRef
+    assert isinstance(chk, WidthCheck)
+    assert isinstance(chk.target, LayerRef)
+    assert chk.target.name == "25_18V_GATE_W"
+
+
+def test_digit_prefixed_rule_code():
+    """Real foundry decks use rule codes like `3DMIM.S.1`."""
+    src = """\
+VARIABLE 3DMIM_S_1 0.4
+3DMIM.S.1 { @ test
+  EXT CMM CTM < 3DMIM_S_1
+}
+"""
+    [rule] = parse_svrf(src)
+    assert rule.code == "3DMIM.S.1"
+    chk = rule.constraint.branches[0].check
+    assert chk.threshold_um == pytest.approx(0.4)
+
+
+# ── Last-assigned-layer fallback ─────────────────────────────────────────────
+
+def test_last_assigned_layer_promoted_to_existence_check():
+    """When a rule body is a chain of layer assignments with no explicit
+    check, the parser promotes the *last* assigned layer to an
+    :class:`ExistenceCheck`. Real foundry decks use this idiom for
+    via-stack analysis (``Branch1`` / ``GoodBranch`` / ``BAD_REGION``).
+    """
+    src = """\
+VIA1.X { @ assignment-chain rule
+  Branch1 = M1 AND VIA1
+  GoodBranch = Branch1 AND M2
+  BAD_REGION = Branch1 NOT GoodBranch
+}
+"""
+    [rule] = parse_svrf(src)
+    chk = rule.constraint.branches[0].check
+    from lithos_core.ir import ExistenceCheck, LayerRef
+    assert isinstance(chk, ExistenceCheck)
+    assert isinstance(chk.target, LayerRef)
+    assert chk.target.name == "BAD_REGION"
+    assert set(rule.constraint.derived_layers) == {"Branch1", "GoodBranch", "BAD_REGION"}
