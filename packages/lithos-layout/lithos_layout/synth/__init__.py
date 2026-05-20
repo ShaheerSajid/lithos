@@ -20,7 +20,12 @@ Pipeline (in roadmap order):
 * :mod:`lithos_layout.synth.port_resolver` — compass-side port
   placement on the cell bounding box; emits ``expose_terminal``
   routing specs for the auto-router.
-* router / auto_router / synthesizer — not yet ported.
+* :mod:`lithos_layout.synth.router` — routing style dispatch.
+  Initial slice covers the registry, the :class:`Router`,
+  :func:`draw_via_stack`, and the ``horizontal_power_rail`` style.
+  Remaining style handlers (gate-poly, drain-bridge, source-to-rail,
+  m0-bridge, cross-couple, …) land in subsequent commits.
+* auto_router / synthesizer — not yet ported.
 
 This subpackage is intentionally PDK-agnostic. Anything that touches
 the rule DB goes through :class:`lithos_layout.BootstrapRules`; anything
@@ -79,6 +84,12 @@ from lithos_layout.synth.port_resolver import (
     generate_expose_specs,
     resolve_ports,
 )
+from lithos_layout.synth.router import (
+    Router,
+    draw_via_stack,
+    register_style,
+    registered_styles,
+)
 
 __all__ = [
     # Loader
@@ -125,4 +136,9 @@ __all__ = [
     "PortCandidate",
     "generate_expose_specs",
     "resolve_ports",
+    # Router
+    "Router",
+    "draw_via_stack",
+    "register_style",
+    "registered_styles",
 ]
