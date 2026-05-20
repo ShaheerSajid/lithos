@@ -12,6 +12,10 @@ import pytest
 
 from lithos_ingest.chunker import Chunk, Document
 from lithos_ingest.loaders import csv_to_chunks, load_html, load_text
+from lithos_ingest.loaders.pdf import (
+    _is_horizontal_char,
+    _strip_header_footer_lines,
+)
 
 
 # ── HTML ────────────────────────────────────────────────────────────────────
@@ -191,3 +195,77 @@ def test_csv_to_chunks_missing_code_column(tmp_path: Path):
     p.write_text(csv_text)
     with pytest.raises(ValueError, match="rule_code"):
         csv_to_chunks(p, code_column="rule_code")
+
+
+# ── PDF cleanup helpers ─────────────────────────────────────────────────────
+#
+# Unit-test the pure helpers used by load_pdf without needing pdfplumber
+# (the real PDF call path is exercised by integration runs).
+
+class TestStripHeaderFooterLines:
+    def test_strips_restricted_secret_header(self):
+        text = "Security B - Some Vendor Restricted Secret\nM1.W.1 width >= 0.23\n"
+        out = _strip_header_footer_lines(text)
+        assert "Restricted Secret" not in out
+        assert "M1.W.1" in out
+
+    def test_strips_confidential_do_not_copy(self):
+        text = "Confidential – Do Not Copy\nrule body\n"
+        out = _strip_header_footer_lines(text)
+        assert "Do Not Copy" not in out
+
+    def test_strips_technology_document_number(self):
+        text = "Technology Document No. : T-XXX-XX-DR-001\nbody\n"
+        out = _strip_header_footer_lines(text)
+        assert "Document No" not in out
+        assert "body" in out
+
+    def test_strips_version_line(self):
+        for line in (
+            "0.18 UM CMOS LOGIC Version : 2.15_2",
+            "65 nm CMOS LOGIC Version : 2.6",
+        ):
+            out = _strip_header_footer_lines(line + "\nbody\n")
+            assert "Version" not in out
+            assert "body" in out
+
+    def test_strips_rotated_stamp_residue(self):
+        """Single-token leftovers from the vertical confidentiality stamp.
+
+        The stamp explodes into single-token lines once char-rotation
+        is filtered out; the strip catches the recurring noise tokens
+        (``Information``, ``LLC``, dates, multi-digit IDs).
+        """
+        text = "Information\nLLC\n01/30/2021\n2560523\nbody\n"
+        out = _strip_header_footer_lines(text)
+        assert "body" in out
+        for token in ("Information", "LLC", "01/30/2021", "2560523"):
+            assert token not in out
+
+    def test_collapses_blank_runs(self):
+        out = _strip_header_footer_lines("a\n\n\n\nb\n")
+        assert out == "a\n\nb"
+
+    def test_keeps_real_lines_intact(self):
+        text = "M1.W.1 Minimum width of M1 region A >= 0.23\n"
+        assert _strip_header_footer_lines(text).strip() == text.strip()
+
+
+class TestIsHorizontalChar:
+    def test_horizontal_passes(self):
+        # Upright body text: matrix = (size, 0, 0, size, e, f).
+        assert _is_horizontal_char({"matrix": (10.0, 0.0, 0.0, 10.0, 100.0, 200.0)}) is True
+
+    def test_ninety_degree_filtered(self):
+        # Vertical watermark: matrix = (0, -1, 1, 0, ...).
+        assert _is_horizontal_char({"matrix": (0.0, -1.0, 1.0, 0.0, 0.0, 0.0)}) is False
+
+    def test_forty_five_degree_filtered(self):
+        # Diagonal stamp: matrix has 0.707 in both b and c.
+        m = (0.707, -0.707, 0.707, 0.707, 0.0, 0.0)
+        assert _is_horizontal_char({"matrix": m}) is False
+
+    def test_missing_matrix_falls_back_to_upright(self):
+        # Old pdfplumber: no matrix; trust `upright`.
+        assert _is_horizontal_char({"upright": True}) is True
+        assert _is_horizontal_char({"upright": False}) is False
