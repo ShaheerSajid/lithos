@@ -42,10 +42,12 @@ Currently registered
   per-finger stubs on m0 and a horizontal bus on ``spec.layer``.
 * ``source_to_rail``       — source / drain strips bonded to a power
   rail via :func:`draw_via_stack` and an upper-layer strap.
+* ``expose_terminal``      — exposes a device terminal as a port
+  without drawing any routing geometry.
 
-Remaining style handlers (gate-to-drain, expose-terminal,
-cross-couple-gate, vertical-bus, cross-row-connect, poly-stub-m1-bus,
-vertical-m2-bus) land in subsequent commits.
+Remaining style handlers (gate-to-drain, cross-couple-gate,
+vertical-bus, cross-row-connect, poly-stub-m1-bus, vertical-m2-bus)
+land in subsequent commits.
 """
 from __future__ import annotations
 
@@ -824,3 +826,68 @@ def _source_to_rail(
                           dy0, rail_y1, lyr_m0)
 
     return []
+
+
+# ── expose_terminal ─────────────────────────────────────────────────────────
+
+@_style("expose_terminal")
+def _expose_terminal(
+    comp:   Any,
+    spec:   RoutingSpec,
+    placed: dict[str, PlacedDevice],
+    rules:  BootstrapRules,
+) -> list[PortCandidate]:
+    """Expose a device terminal as a port without drawing any routing.
+
+    Use this to make terminals that are not connected internally
+    (e.g. SRAM BL / BL_, or an inverter's IN that only drives gates)
+    reachable from outside the cell.
+
+    Expected path: ``[Dev.Terminal]`` (single element).
+
+    Extra fields
+    ------------
+    orientation : int
+        Port orientation in degrees (default ``90`` = north).
+    location_key : str
+        Explicit location key for the emitted candidate. Defaults to
+        ``"<dev>_<term>_center"``.
+    """
+    if not spec.path:
+        return []
+
+    try:
+        t = resolve_terminal(spec.path[0], placed, rules)
+    except (KeyError, ValueError) as exc:
+        warnings.warn(
+            f"expose_terminal (net={spec.net!r}): {exc}; skipped.",
+            stacklevel=3,
+        )
+        return []
+
+    mid_x = (t.x0 + t.x1) / 2
+    mid_y = (t.y0 + t.y1) / 2
+
+    orientation = int((spec.extra or {}).get("orientation", 90))
+    if orientation in (90, 270):
+        width = t.x1 - t.x0
+    else:
+        width = t.y1 - t.y0
+
+    m0_w_min = rules.m0.get("width_min_um", 0.17) or 0.17
+    width    = max(width, m0_w_min)
+
+    location_key = (spec.extra or {}).get(
+        "location_key",
+        f"{spec.path[0].replace('.', '_')}_center",
+    )
+
+    return [PortCandidate(
+        net          = spec.net,
+        location_key = location_key,
+        x            = mid_x,
+        y            = mid_y,
+        layer        = t.layer,
+        width        = width,
+        orientation  = orientation,
+    )]

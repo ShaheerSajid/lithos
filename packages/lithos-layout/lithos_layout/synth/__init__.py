@@ -90,6 +90,10 @@ from lithos_layout.synth.router import (
     register_style,
     registered_styles,
 )
+from lithos_layout.synth.synthesizer import (
+    SynthResult,
+    Synthesizer,
+)
 
 __all__ = [
     # Loader
@@ -141,4 +145,7 @@ __all__ = [
     "draw_via_stack",
     "register_style",
     "registered_styles",
+    # Synthesizer
+    "Synthesizer",
+    "SynthResult",
 ]
