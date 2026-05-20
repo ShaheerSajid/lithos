@@ -35,3 +35,5 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["lithos_ingest"]
+# Bundle the shipped data files (e.g. categories_default.yaml).
+include = ["lithos_ingest/data/*.yaml"]

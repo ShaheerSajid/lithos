@@ -38,6 +38,7 @@ from lithos_core.fix import FixBranch, FixMetadata
 from lithos_core.db import Rule, RuleDB
 from lithos_core.metadata import PDKMetadata, load_metadata
 from lithos_core.categories import CategoryConfig, CategoryDef, load_categories
+from lithos_core.layers import LayerDef, LayersFile, load_layers_file
 
 __all__ = [
     "Constraint",
@@ -70,4 +71,7 @@ __all__ = [
     "CategoryConfig",
     "CategoryDef",
     "load_categories",
+    "LayerDef",
+    "LayersFile",
+    "load_layers_file",
 ]

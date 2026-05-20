@@ -9,11 +9,17 @@ Subcommands::
 
     lithos-ingest full   --svrf DECK --doc DOC --db PATH \\
                               --pdk-name NAME --pdk-version VER \\
-                              [--categories YAML] [--model GGUF] [--no-llm] \\
+                              [--layers YAML | --categories YAML] \\
+                              [--model GGUF] [--no-llm] \\
                               [--csv-code-column COL]
         Full pipeline: parse the deck, load the doc (PDF/HTML/RST/MD/CSV
         — auto-detected by extension), chunk by rule code, optionally
         extract FixMetadata with a local LLM, join, and write.
+
+        ``--layers`` (preferred) provides both category scoping and PDF
+        aliases (e.g. ``M3.W.1 → Mx.W.1``) so docs that use class
+        placeholders for metals / vias still anchor chunks correctly.
+        ``--categories`` is the legacy single-purpose form.
 
     lithos-ingest stats  DB
         Print rule-coverage summary by category and review state.
@@ -38,7 +44,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from lithos_core import CategoryConfig, RuleDB, load_categories
+from lithos_core import CategoryConfig, LayersFile, RuleDB, load_categories, load_layers_file
 
 from lithos_ingest.chunker import Chunk, Document, chunk_for_categories, chunk_for_codes
 from lithos_ingest.loaders import csv_to_chunks, load_html, load_pdf, load_text
@@ -121,21 +127,40 @@ def cmd_full(args: argparse.Namespace) -> int:
     deck_path = Path(args.svrf)
     doc_path  = Path(args.doc)
     db_path   = Path(args.db)
-    categories = (
-        load_categories(args.categories) if args.categories else None
-    )
+
+    # Categories may come from a standalone --categories YAML or be
+    # derived from a --layers YAML. Layers takes precedence and also
+    # supplies the per-code PDF aliases used by the chunker.
+    layers_file: Optional[LayersFile] = None
+    categories: Optional[CategoryConfig] = None
+    code_aliases: dict[str, list[str]] = {}
+    if args.layers:
+        layers_file = load_layers_file(args.layers)
+        categories  = layers_file.as_category_config()
+    elif args.categories:
+        categories  = load_categories(args.categories)
 
     parsed: list[ParsedRule] = parse_svrf(deck_path.read_text())
     codes = [p.code for p in parsed]
+
+    if layers_file is not None:
+        for code in codes:
+            aliases = layers_file.pdf_aliases_for(code)
+            if aliases:
+                code_aliases[code] = aliases
 
     doc, csv_chunks = _load_doc_or_csv(doc_path, csv_code_column=args.csv_code_column)
     if csv_chunks is not None:
         chunks = {c: cs for c, cs in csv_chunks.items() if c in set(codes)}
     elif doc is not None:
         if categories is not None:
-            chunks = chunk_for_categories(doc, codes, categories)
+            chunks = chunk_for_categories(
+                doc, codes, categories, code_aliases=code_aliases or None,
+            )
         else:
-            chunks = chunk_for_codes(doc, codes)
+            chunks = chunk_for_codes(
+                doc, codes, code_aliases=code_aliases or None,
+            )
     else:
         chunks = {}
 
@@ -257,7 +282,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--db",              required=True)
     p.add_argument("--pdk-name",        required=True)
     p.add_argument("--pdk-version",     required=True)
-    p.add_argument("--categories",      help="Category config YAML")
+    p.add_argument("--categories",      help="Category config YAML (legacy form)")
+    p.add_argument("--layers",          help="Unified layers.yaml (supplies categories + PDF aliases)")
     p.add_argument("--model",           help="GGUF model path for LLM extraction")
     p.add_argument("--no-llm",          action="store_true",
                                        help="Skip LLM extraction (chunks still recorded)")

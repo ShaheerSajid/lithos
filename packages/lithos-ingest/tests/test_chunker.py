@@ -271,3 +271,52 @@ def test_chunk_for_categories_honours_section_pattern():
     )
     assert len(chunks["M2.W.1"]) == 1
     assert chunks["LI.E.1"] == []     # category enabled but section never matches
+
+
+# ── code_aliases (PDF placeholder fallback) ─────────────────────────────────
+
+def test_code_aliases_used_when_exact_code_missing():
+    """`chunk_for_codes` should fall back to an alias when the exact code
+    doesn't appear. This unblocks docs that document a class of layers
+    via a placeholder (e.g. ``Mx.W.1`` standing in for ``M3.W.1``)."""
+    text = "4.5.14 Metal-2 to Metal-5 (Mx) Rules:\n  Mx.W.1 Minimum width >= 0.28\n  Mx.S.1 Minimum space >= 0.28\n"
+    doc = _doc(text)
+    chunks = chunk_for_codes(
+        doc, ["M3.W.1", "M4.S.1"],
+        context_before=20, context_after=100,
+        code_aliases={
+            "M3.W.1": ["Mx.W.1"],
+            "M4.S.1": ["Mx.S.1"],
+        },
+    )
+    assert len(chunks["M3.W.1"]) == 1
+    assert "Mx.W.1" in chunks["M3.W.1"][0].text
+    assert len(chunks["M4.S.1"]) == 1
+    assert "Mx.S.1" in chunks["M4.S.1"][0].text
+
+
+def test_code_aliases_only_used_when_exact_misses():
+    """If the exact code is present, the alias must not override it."""
+    text = "M3.W.1 explicitly mentioned. Also Mx.W.1 in a table."
+    doc = _doc(text)
+    chunks = chunk_for_codes(
+        doc, ["M3.W.1"],
+        context_before=10, context_after=80,
+        code_aliases={"M3.W.1": ["Mx.W.1"]},
+    )
+    # Should find the explicit form, not chase the alias.
+    assert len(chunks["M3.W.1"]) == 1
+    assert "M3.W.1 explicitly" in chunks["M3.W.1"][0].text
+
+
+def test_code_aliases_tries_in_order():
+    """Aliases are tried left-to-right; first that hits wins."""
+    text = "Section: Mz.W.1 only here.\n"
+    doc = _doc(text)
+    chunks = chunk_for_codes(
+        doc, ["M8.W.1"],
+        context_before=10, context_after=80,
+        code_aliases={"M8.W.1": ["My.W.1", "Mz.W.1"]},   # My miss, Mz hit
+    )
+    assert len(chunks["M8.W.1"]) == 1
+    assert "Mz.W.1" in chunks["M8.W.1"][0].text

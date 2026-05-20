@@ -150,6 +150,7 @@ def chunk_for_codes(
     word_boundary:      bool = True,
     min_separation:     int  = 50,
     section_pattern:    Optional[str] = None,
+    code_aliases:       Optional[dict[str, list[str]]] = None,
 ) -> dict[str, list[Chunk]]:
     """For each code in ``codes``, return the PDF chunks where it appears.
 
@@ -169,14 +170,31 @@ def chunk_for_codes(
         Optional regex; when set, only matches whose extracted window
         contains this pattern are retained. Used by
         :func:`chunk_for_categories` to scope each category's searches.
+    code_aliases
+        Per-code list of PDF-side fallback strings. When a code's own
+        text doesn't appear in the doc, each alias is tried in order;
+        the first that produces hits is used as the anchor source. This
+        unblocks docs that document a class of layers via a placeholder
+        (e.g. ``M3.W.1`` → ``Mx.W.1``). Chunks discovered through an
+        alias are still keyed by the original code.
     """
     code_list = list(codes)
 
     # First pass: collect every (code, offset) anchor so we can cross-bound.
+    # When the explicit code doesn't appear, try ``code_aliases[code]`` in
+    # order so a placeholder-class doc (e.g. ``Mx.W.1`` standing in for
+    # ``M2.W.1`` / ``M3.W.1`` / …) still anchors chunks.
     by_code: dict[str, list[int]] = {}
     all_offsets: list[int] = []
+    aliases_map = code_aliases or {}
     for code in code_list:
         offsets = find_code_occurrences(doc, code, word_boundary=word_boundary)
+        if not offsets:
+            for alias in aliases_map.get(code, ()):
+                alias_off = find_code_occurrences(doc, alias, word_boundary=word_boundary)
+                if alias_off:
+                    offsets = alias_off
+                    break
         by_code[code] = offsets
         all_offsets.extend(offsets)
     all_offsets.sort()
@@ -221,6 +239,7 @@ def chunk_for_categories(
     bound_to_next_code: bool = True,
     word_boundary:      bool = True,
     min_separation:     int  = 50,
+    code_aliases:       Optional[dict[str, list[str]]] = None,
 ) -> dict[str, list[Chunk]]:
     """Category-scoped chunking.
 
@@ -250,6 +269,7 @@ def chunk_for_categories(
             word_boundary      = word_boundary,
             min_separation     = min_separation,
             section_pattern    = section_pat,
+            code_aliases       = code_aliases,
         )
         for code, code_chunks in chunks.items():
             # Annotate each chunk with the category's section name (informational).

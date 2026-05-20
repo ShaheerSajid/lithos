@@ -1,0 +1,78 @@
+# Default ingest category config for lithos-ingest.
+#
+# Scopes ingestion to the rule sets a cell-level layout generator actually
+# consumes: poly, diffusion, well, metal, vias. Other rules are tagged
+# ``unknown`` and deferred until a DRC iteration flags one as relevant.
+#
+# Use with the CLI:
+#
+#     lithos-ingest full --svrf <deck> --doc <pdf> --db rules.sqlite \
+#         --pdk-name <name> --pdk-version <ver> \
+#         --categories packages/lithos-ingest/lithos_ingest/data/categories_default.yaml
+#
+# Copy and adapt per-PDK when prefix conventions differ. The ``priority``
+# field decides tie-breaks when a code matches more than one category.
+
+default_category: unknown
+
+categories:
+  - name: poly
+    priority: 10
+    code_prefixes:
+      - "PO."
+      - "POLY."
+      - "GA."
+    description: Poly width / spacing / endcap / gate-overlap rules.
+
+  - name: diffusion
+    priority: 11
+    code_prefixes:
+      - "OD."
+      - "DIFF."
+      - "RX."
+      - "ACT."
+    description: Active / oxide-definition / diffusion layer rules.
+
+  - name: well
+    priority: 12
+    code_prefixes:
+      - "NW."
+      - "PW."
+      - "DNW."
+      - "WELL."
+      - "NWELL."
+      - "PWELL."
+    description: N-well / P-well / deep-N-well rules.
+
+  - name: metal
+    priority: 13
+    code_prefixes:
+      - "M1."
+      - "M2."
+      - "M3."
+      - "M4."
+      - "M5."
+      - "M6."
+      - "M7."
+      - "M8."
+      - "M9."
+      - "AP."
+      - "METAL."
+    description: Metal layer width / spacing / area / density / enclosure rules.
+
+  - name: via
+    priority: 14
+    code_prefixes:
+      - "CO."
+      - "CONT."
+      - "CONTACT."
+      - "VIA"
+      - "V1."
+      - "V2."
+      - "V3."
+      - "V4."
+      - "V5."
+      - "V6."
+      - "V7."
+      - "V8."
+    description: Contact / inter-metal via rules across the via stack.
