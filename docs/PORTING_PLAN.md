@@ -17,7 +17,7 @@ Each step blocks the next unless noted otherwise.
 | - | ----------------------------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1 | Port `cells/standard.py` + `cells/vias.py` + `cells/tap.py`       | **done**   | Includes the project-wide M0/M1/M2 rename. See "Cells port" below.                                                                                             |
 | 2 | Port `synth/loader.py` (topology YAML → typed specs; zero PDK dep) | **done**   | `LabelLayerSpec` fields renamed to `m1`/`m2` with `None` defaults; sky130 magic values removed.                                                                |
-| 3 | Port `synth/placer.py` + `synth/router.py` + `synth/auto_router.py` (+ `synthesizer.py`, `netlist.py`, `port_resolver.py`, `constraints.py`, `euler.py`, `geo/`) | pending    | Heavy lift: placer ≈ 725 LoC, router ≈ 1652 LoC, auto_router ≈ 874 LoC, plus support files. Consumes the loader output and drives the cell factories.          |
+| 3 | Port `synth/placer.py` + `synth/router.py` + `synth/auto_router.py` (+ `synthesizer.py`, `netlist.py`, `port_resolver.py`, `constraints.py`, `euler.py`, `geo/`) | in progress | Foundation modules ported: `constraints.py` (expression eval), `euler.py` (diffusion ordering), `netlist.py` (net graph). Remaining: placer (~725 LoC), router (~1652 LoC), auto_router (~874 LoC), port_resolver (~233 LoC), synthesizer (~745 LoC). `geo/` (1948 LoC of RL-flavoured agent code) deferred — looks more like step 6 material. |
 | 4 | Port `templates/cells/*.yaml`                                     | **done**   | 12 files at `packages/lithos-layout/templates/cells/`. All sky130 layer names (`met1`/`met2`/`li1`/`mcon`/`licon1`) rewritten to canonical `m0`/`m1`/`m2`/`contact`/`via_m0_m1`; `label_layers` blocks removed (caller fills from PDK metadata). |
 | 5 | Port `repair/` heuristic primitives into `lithos-repair`           | pending    | See [REPAIR_ARCHITECTURE.md](REPAIR_ARCHITECTURE.md) for the redesigned plan. Old code is heuristic; new design is LLM understanding + closed action vocab + learned policy. |
 | 6 | Port `rl/` (env + policy + training) into `lithos-rl`              | pending    | Lives in `layout_gen` at commit `23cb778` on branch `drc-repair-engine`. See "RL phase status" below.                                                          |
@@ -95,6 +95,38 @@ Tests: `tests/test_synth_loader.py` — 31 tests covering
 `_normalize_layer`, device/net/port parsing, all three placement
 modes, routing hints (dict + list forms), label layers, diffusion
 merges, and search-dir resolution.
+
+## Synth foundation port (step 3, in progress)
+
+Foundation modules in
+[packages/lithos-layout/lithos_layout/synth/](../packages/lithos-layout/lithos_layout/synth/):
+
+- `constraints.py` — safe symbolic-expression evaluator. Wraps
+  :class:`BootstrapRules` + per-device :class:`TransistorGeom` in an
+  attribute-access namespace and evaluates expressions like
+  ``rules.diff.spacing_min_um - 2*rules.poly.endcap_over_diff_um``
+  under a locked-down ``eval()``. The ``rules.*`` namespace uses the
+  canonical lithos stack (``poly`` / ``diff`` / ``contact`` / ``m0`` /
+  ``m1`` / ``via_m0_m1`` / …), not the sky130-flavoured names from
+  the prototype.
+- `euler.py` — Euler-path diffusion ordering. Finds a common ordering
+  through the NMOS / PMOS diffusion graphs so adjacent transistors
+  share S/D terminals (denser cells, fewer diffusion cuts).
+- `netlist.py` — :class:`NetGraph` builder. Walks
+  :attr:`CellTemplate.devices` + :attr:`CellTemplate.nets` to produce
+  a connectivity graph the auto-router consumes.
+
+Tests: `tests/test_synth_constraints.py` (18 tests),
+`tests/test_synth_euler.py` (~12 tests),
+`tests/test_synth_netlist.py` (~12 tests). Suite total: 442 passing.
+
+Side fix in `rules.py`: :class:`_Section` gained ``__getattr__`` so
+``rules.poly.width_min_um`` works as attribute access (not just
+``rules.poly["width_min_um"]``). This was needed for the expression
+evaluator's eval namespace.
+
+Remaining for step 3: placer → port_resolver → router → auto_router →
+synthesizer. Multi-session.
 
 ## Templates port (step 4, completed)
 

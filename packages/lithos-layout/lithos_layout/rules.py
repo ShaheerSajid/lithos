@@ -107,7 +107,12 @@ def load_bootstrap_mapping(path: Path | str) -> BootstrapMapping:
 # ── Bridge ───────────────────────────────────────────────────────────────────
 
 class _Section:
-    """Dict-flavoured proxy for ``rules.poly["width_min_um"]`` access."""
+    """Dict-flavoured proxy for ``rules.poly["width_min_um"]`` access.
+
+    Also supports attribute-style access — ``rules.poly.width_min_um`` —
+    so the section can be embedded directly in a constraint-expression
+    eval namespace.
+    """
     __slots__ = ("_rules", "_prefix")
 
     def __init__(self, rules: "BootstrapRules", prefix: str):
@@ -116,6 +121,18 @@ class _Section:
 
     def __getitem__(self, key: str) -> float:
         return self._rules.get(f"{self._prefix}.{key}")
+
+    def __getattr__(self, key: str) -> float:
+        # Triggered only when normal attribute lookup fails — i.e. for
+        # rule keys, not for the protected ``_rules`` / ``_prefix``
+        # slots. Convert a leading underscore reject to AttributeError
+        # so pickle and friends don't accidentally trip a key lookup.
+        if key.startswith("_"):
+            raise AttributeError(key)
+        try:
+            return self._rules.get(f"{self._prefix}.{key}")
+        except KeyError as exc:
+            raise AttributeError(str(exc)) from exc
 
     def get(self, key: str, default=None):
         try:
