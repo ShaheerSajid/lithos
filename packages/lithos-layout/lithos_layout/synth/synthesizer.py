@@ -18,18 +18,15 @@ pipeline together:
 
 What this skeleton does **not** do (deferred to follow-up commits):
 
-* **Auto-routing** — the caller must hand in a :class:`RoutingSpec`
-  list. The auto-router that emits these specs from a
-  :class:`NetGraph` is the next port.
 * **DRC iteration** — runs once, returns. No fix loop, no ML model,
   no geometric-fix agent.
 * **LVS** — no connectivity verification.
 * **GDS labels / well taps / per-row labels** — defer until the
   Magic / netgen LVS pipeline is wired in.
 
-The skeleton is deliberately small (~200 LoC) so a downstream caller
-can already produce a fully-routed inverter GDS from
-``load_template("inverter")`` once they supply the routing specs.
+The auto-router runs by default when the caller omits
+``routing_specs``; callers can still hand-roll a spec list to override
+the planner (useful for tests or hand-tuned cells).
 """
 from __future__ import annotations
 
@@ -38,6 +35,7 @@ from typing      import Any
 
 from lithos_layout.rules                import BootstrapRules
 from lithos_layout.transistor           import draw_transistor
+from lithos_layout.synth.auto_router    import AutoRouter
 from lithos_layout.synth.loader         import CellTemplate, RoutingSpec
 from lithos_layout.synth.netlist        import build_net_graph
 from lithos_layout.synth.placer         import Placer, PlacedDevice
@@ -102,11 +100,12 @@ class Synthesizer:
             Device sizing keyed as ``"w_<dev_name>"`` / ``"l_<dev_name>"``
             (lower-case) with ``"w"`` / ``"l"`` falling back as defaults.
         routing_specs :
-            Routing specs to feed the :class:`Router`. Use the
-            forthcoming auto-router to build these from the
-            :class:`NetGraph`; today the caller hands them in
-            directly. ``expose_terminal`` specs for ports that name a
-            specific terminal are added automatically via
+            Routing specs to feed the :class:`Router`. When
+            ``None``, :class:`AutoRouter` generates the specs from the
+            :class:`NetGraph` + placement. Pass an explicit list to
+            override (e.g. for hand-tuned cells or testing).
+            ``expose_terminal`` specs for ports that name a specific
+            terminal are added automatically via
             :func:`generate_expose_specs`.
         component_name :
             Optional override for the :class:`gdsfactory.Component`
@@ -150,7 +149,10 @@ class Synthesizer:
 
         # ── Routing ──────────────────────────────────────────────────
         net_graph = build_net_graph(template)
-        specs: list[RoutingSpec] = list(routing_specs or [])
+        if routing_specs is None:
+            specs = AutoRouter(self.rules).plan(net_graph, placed, template)
+        else:
+            specs = list(routing_specs)
         specs.extend(generate_expose_specs(template, net_graph, placed))
 
         router = Router(self.rules)

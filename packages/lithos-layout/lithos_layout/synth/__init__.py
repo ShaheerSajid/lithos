@@ -34,6 +34,7 @@ that touches GDS layers uses the canonical lithos stack vocabulary
 """
 from __future__ import annotations
 
+from lithos_layout.synth.auto_router import AutoRouter
 from lithos_layout.synth.constraints import (
     build_namespace,
     eval_expr,
@@ -96,6 +97,8 @@ from lithos_layout.synth.synthesizer import (
 )
 
 __all__ = [
+    # Auto-router
+    "AutoRouter",
     # Loader
     "AbutmentSpec",
     "CellDimensions",
