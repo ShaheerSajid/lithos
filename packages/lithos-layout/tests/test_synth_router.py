@@ -341,3 +341,113 @@ class TestM0Bridge:
                            path=["A.D"])
         cands = Router(rules).route(gf.Component(), [spec], placed)
         assert cands == []
+
+
+# ── drain_bridge ────────────────────────────────────────────────────────────
+
+class TestDrainBridge:
+    def test_inverter_like_bridge_writes_polygons(self, tmp_path: Path):
+        """N drain + P drain bridged across the N-P gap on m0."""
+        rules, placed = _paired_devices(tmp_path)
+        comp = gf.Component()
+        spec = RoutingSpec(net="OUT", style="drain_bridge", layer="m0",
+                           path=["N.D", "P.D"])
+        [c] = Router(rules).route(comp, [spec], placed)
+        assert c.net == "OUT"
+        assert c.location_key == "drain_bridge_right_edge_mid_y"
+        assert c.orientation == 0
+        polys = comp.get_polygons(by="tuple")
+        assert rules.layer("m0") in polys
+
+    def test_bridge_on_m1_drops_via_stacks(self, tmp_path: Path):
+        """When the bus rides m1, the handler must also emit m0/contact/via
+        polygons via draw_via_stack at every drain."""
+        # Build a richer rules set with via_m0_m1 mapping so draw_via_stack
+        # can actually emit cuts.
+        rules = _rules_with_via(tmp_path)
+        n = _placed_device(name="N", dev_type="nmos", x=0.0, y=0.0,
+                           total_x=1.0, total_y=0.6)
+        p = _placed_device(name="P", dev_type="pmos", x=0.0, y=0.8,
+                           total_x=1.0, total_y=0.6)
+        comp = gf.Component()
+        spec = RoutingSpec(net="OUT", style="drain_bridge", layer="m1",
+                           path=["N.D", "P.D"])
+        Router(rules).route(comp, [spec], placed={"N": n, "P": p})
+        polys = comp.get_polygons(by="tuple")
+        assert rules.layer("m1") in polys
+        assert rules.layer("via_m0_m1") in polys
+
+    def test_too_short_path_no_op(self, tmp_path: Path):
+        rules, placed = _paired_devices(tmp_path)
+        spec = RoutingSpec(net="OUT", style="drain_bridge", layer="m0",
+                           path=["N.D"])
+        cands = Router(rules).route(gf.Component(), [spec], placed)
+        assert cands == []
+
+
+# ── source_to_rail ──────────────────────────────────────────────────────────
+
+class TestSourceToRail:
+    def test_bottom_rail_m0_only_strap(self, tmp_path: Path):
+        """rail_layer == m0 → single m0 strap from S edge down to rail."""
+        rules = _rules(tmp_path)
+        placed = {"N": _placed_device(name="N", x=0.0, y=0.0,
+                                       total_x=2.0, total_y=0.6)}
+        comp = gf.Component()
+        spec = RoutingSpec(net="GND", style="source_to_rail", layer="m0",
+                           edge="bottom", path=["N.S"])
+        Router(rules).route(comp, [spec], placed)
+        assert rules.layer("m0") in comp.get_polygons(by="tuple")
+
+    def test_top_rail_m1_drops_via_stack(self, tmp_path: Path):
+        """rail_layer == m1 → via stack at each strip + m1 strap to rail."""
+        rules = _rules_with_via(tmp_path)
+        placed = {"P": _placed_device(name="P", dev_type="pmos",
+                                       x=0.0, y=0.0,
+                                       total_x=2.0, total_y=0.6)}
+        comp = gf.Component()
+        spec = RoutingSpec(net="VDD", style="source_to_rail", layer="m1",
+                           edge="top", path=["P.S"])
+        Router(rules).route(comp, [spec], placed)
+        polys = comp.get_polygons(by="tuple")
+        assert rules.layer("m1") in polys
+        assert rules.layer("via_m0_m1") in polys
+
+    def test_unknown_device_skipped(self, tmp_path: Path):
+        rules = _rules(tmp_path)
+        placed = {"N": _placed_device(name="N")}
+        spec = RoutingSpec(net="GND", style="source_to_rail", layer="m0",
+                           edge="bottom", path=["BOGUS.S"])
+        cands = Router(rules).route(gf.Component(), [spec], placed)
+        assert cands == []
+
+
+def _rules_with_via(tmp_path: Path) -> BootstrapRules:
+    """Variant of ``_rules`` with via_m0_m1 keys so draw_via_stack works."""
+    rules = _rules(tmp_path)
+    # Add the missing via keys post-hoc into the bootstrap mapping.
+    rules._mapping.mapping.update({
+        "via_m0_m1.size_um":                  "V01.W.1",
+        "m0.enclosure_of_via_m0_m1_2adj_um":  "M0.E.V01.2ADJ",
+        "m1.enclosure_of_via_m0_m1_2adj_um":  "M1.E.V01.2ADJ",
+    })
+    # Seed the matching rules in the DB.
+    for code, check in [
+        ("V01.W.1",       WidthCheck(target=LayerRef(name="via_m0_m1"),
+                                     op=">=", threshold_um=0.17)),
+        ("M0.E.V01.2ADJ", EnclosureCheck(inner=LayerRef(name="via_m0_m1"),
+                                         outer=LayerRef(name="m0"),
+                                         op=">=", threshold_um=0.06)),
+        ("M1.E.V01.2ADJ", EnclosureCheck(inner=LayerRef(name="via_m0_m1"),
+                                         outer=LayerRef(name="m1"),
+                                         op=">=", threshold_um=0.06)),
+    ]:
+        rules.db.upsert_rule(Rule(
+            code=code, category="x", usage_class="geometry_primitive",
+            constraint=Constraint(branches=[ConstraintBranch(check=check)]),
+        ))
+    # Also expose via_m0_m1 in the metadata layer table.
+    rules.metadata.layers["via_m0_m1"] = (67, 44)
+    # Bust the get() cache so the new keys resolve.
+    rules._cache.clear()
+    return rules

@@ -37,11 +37,15 @@ Currently registered
 * ``intra_device_sd``      — horizontal strap connecting all S or D
   fingers of a single multi-finger device.
 * ``m0_bridge``            — narrow m0 strip between two S/D terminals
-  (used for SRAM Q / Q_ nodes and similar local taps).
+  at the same Y band (SRAM Q / Q_ and similar local taps).
+* ``drain_bridge``         — N.D ↔ P.D bridge across the N-P gap, with
+  per-finger stubs on m0 and a horizontal bus on ``spec.layer``.
+* ``source_to_rail``       — source / drain strips bonded to a power
+  rail via :func:`draw_via_stack` and an upper-layer strap.
 
-Remaining style handlers (drain-bridge, source-to-rail, gate-to-drain,
-expose-terminal, cross-couple-gate, vertical-bus, cross-row-connect,
-poly-stub-m1-bus, vertical-m2-bus) land in subsequent commits.
+Remaining style handlers (gate-to-drain, expose-terminal,
+cross-couple-gate, vertical-bus, cross-row-connect, poly-stub-m1-bus,
+vertical-m2-bus) land in subsequent commits.
 """
 from __future__ import annotations
 
@@ -611,3 +615,212 @@ def _m0_bridge(
         width        = route_w,
         orientation  = 90,
     )]
+
+
+# ── drain_bridge ────────────────────────────────────────────────────────────
+
+@_style("drain_bridge")
+def _drain_bridge(
+    comp:   Any,
+    spec:   RoutingSpec,
+    placed: dict[str, PlacedDevice],
+    rules:  BootstrapRules,
+) -> list[PortCandidate]:
+    """Bridge NMOS drain(s) to PMOS drain(s) across the N-P gap.
+
+    Expected path: ``[N.D, P.D]``. The bridge has three parts:
+
+    * Vertical m0 stubs from each NMOS drain strip up into the gap.
+    * Horizontal bus on ``spec.layer`` (default ``m0``) centred in the
+      N-P gap, spanning the leftmost-to-rightmost drain X.
+    * Vertical m0 stubs from the bus down to each PMOS drain strip.
+
+    When ``spec.layer`` is above ``m0`` (e.g. ``m1`` for wider output
+    bridges), a via stack is dropped at every drain so the upper-layer
+    bus is bonded down to the S/D contact.
+    """
+    if len(spec.path) < 2:
+        return []
+    n_name = spec.path[0].split(".")[0]
+    p_name = spec.path[1].split(".")[0]
+    dev_n  = placed[n_name]
+    dev_p  = placed[p_name]
+
+    m0_w_min   = rules.m0.get("width_min_um", 0.17) or 0.17
+    route_layer = spec.layer or "m0"
+    lyr         = rules.layer(route_layer)
+    try:
+        route_w = rules.section(route_layer).get("width_min_um", m0_w_min) or m0_w_min
+    except Exception:                                # pragma: no cover
+        route_w = m0_w_min
+    rhw = route_w / 2
+
+    nd_y0, nd_y1 = global_diff_y(dev_n, rules)
+    pd_y0, pd_y1 = global_diff_y(dev_p, rules)
+    nd_cy        = (nd_y0 + nd_y1) / 2
+    pd_cy        = (pd_y0 + pd_y1) / 2
+    bus_y        = (nd_y1 + pd_y0) / 2
+
+    def _drain_indices(dev: PlacedDevice) -> list[int]:
+        out = []
+        for j in range(dev.geom.n_fingers + 1):
+            j_is_drain = (j % 2 == 0) if dev.spec.sd_flip else (j % 2 == 1)
+            if j_is_drain:
+                out.append(j)
+        return out
+
+    m0_is_m1 = getattr(rules, "m0_is_m1", False)
+    m1_w_min = rules.m1.get("width_min_um", 0.14) or 0.14
+
+    def _enforce_min_w(x0: float, x1: float) -> tuple[float, float]:
+        """When m0 == m1 (collapsed PDK), the m0 strap is on the m1 layer
+        in DRC and must hit m1's minimum width.
+        """
+        if not m0_is_m1:
+            return x0, x1
+        w = x1 - x0
+        if w < m1_w_min:
+            cx = (x0 + x1) / 2
+            x0 = cx - m1_w_min / 2
+            x1 = cx + m1_w_min / 2
+        return x0, x1
+
+    all_x0: list[float] = []
+    all_x1: list[float] = []
+
+    # NMOS stubs.
+    for j in _drain_indices(dev_n):
+        sx0, sx1 = global_sd_x(dev_n, j, rules)
+        sx0, sx1 = _enforce_min_w(sx0, sx1)
+        all_x0.append(sx0)
+        all_x1.append(sx1)
+        _rect(comp, sx0, sx1, nd_y1, bus_y + rhw, lyr)
+        if route_layer != "m0":
+            draw_via_stack(comp, rules, (sx0 + sx1) / 2, nd_cy,
+                           "m0", route_layer, direction="vertical")
+
+    # PMOS stubs.
+    for j in _drain_indices(dev_p):
+        sx0, sx1 = global_sd_x(dev_p, j, rules)
+        sx0, sx1 = _enforce_min_w(sx0, sx1)
+        all_x0.append(sx0)
+        all_x1.append(sx1)
+        _rect(comp, sx0, sx1, bus_y - rhw, pd_y0, lyr)
+        if route_layer != "m0":
+            draw_via_stack(comp, rules, (sx0 + sx1) / 2, pd_cy,
+                           "m0", route_layer, direction="vertical")
+
+    # Horizontal bus spanning every drain.
+    if all_x0:
+        _rect(comp, min(all_x0), max(all_x1),
+              bus_y - rhw, bus_y + rhw, lyr)
+
+    bridge_height = max(pd_y0 - nd_y1, dev_n.geom.l_um)
+    rightmost_x   = max(all_x1) if all_x1 else 0.0
+    return [PortCandidate(
+        net          = spec.net,
+        location_key = "drain_bridge_right_edge_mid_y",
+        x            = rightmost_x,
+        y            = bus_y,
+        layer        = route_layer,
+        width        = bridge_height,
+        orientation  = 0,
+    )]
+
+
+# ── source_to_rail ──────────────────────────────────────────────────────────
+
+@_style("source_to_rail")
+def _source_to_rail(
+    comp:   Any,
+    spec:   RoutingSpec,
+    placed: dict[str, PlacedDevice],
+    rules:  BootstrapRules,
+) -> list[PortCandidate]:
+    """Connect source / drain terminals to a power rail.
+
+    Expected path: ``[Dev.S, Dev.S, …]`` (or ``Dev.D`` for layouts where
+    the rail-side terminal is the drain).  ``spec.edge`` picks the rail:
+
+    * ``"bottom"`` — GND rail just below the lowest device.
+    * ``"top"``    — VDD rail just above the highest device.
+
+    For each terminal strip the handler either:
+
+    * draws an m0 strap from the strip's diffusion edge to the rail Y
+      boundary when ``spec.layer == "m0"`` (no via stack needed); or
+    * drops a via stack at the strip's diffusion centre and draws a
+      ``spec.layer`` strap from the via to the rail Y boundary
+      otherwise.
+    """
+    if not spec.path:
+        return []
+
+    edge       = spec.edge or "bottom"
+    rail_layer = spec.layer or "m1"
+
+    m0_w_min = rules.m0.get("width_min_um", 0.17) or 0.17
+    try:
+        rail_w_min = rules.section(rail_layer).get("width_min_um", 0.14) or 0.14
+    except Exception:                                # pragma: no cover
+        rail_w_min = 0.14
+    rail_h = max(rail_w_min, m0_w_min)
+
+    lyr_m0 = rules.layer("m0")
+
+    gap = _power_rail_gap(rules)
+    if edge == "bottom":
+        rail_y0, rail_y1 = -rail_h - gap, -gap
+    else:
+        cell_ytop = max(d.y + d.geom.total_y_um for d in placed.values())
+        rail_y0, rail_y1 = cell_ytop + gap, cell_ytop + gap + rail_h
+
+    for ref in spec.path:
+        parts = ref.split(".", 1)
+        if len(parts) != 2:
+            continue
+        dev_name, term = parts
+        dev = placed.get(dev_name)
+        if dev is None:
+            continue
+
+        # j=0 → source, j=1 → drain, … (sd_flip reverses parity).
+        n_fingers = dev.geom.n_fingers
+        is_source = (term == "S")
+        sd_indices: list[int] = []
+        for j in range(n_fingers + 1):
+            j_is_source = (j % 2 == 0) if not dev.spec.sd_flip else (j % 2 == 1)
+            if j_is_source == is_source:
+                sd_indices.append(j)
+
+        dy0, dy1 = global_diff_y(dev, rules)
+        d_cy     = (dy0 + dy1) / 2
+
+        for j in sd_indices:
+            sx0, sx1 = global_sd_x(dev, j, rules)
+            tx_mid   = (sx0 + sx1) / 2
+            m0_hx    = max(m0_w_min / 2, (sx1 - sx0) / 2)
+
+            if rail_layer != "m0":
+                # Bond down to m0 at the strip centre, then strap on the
+                # rail layer from via to rail edge.
+                draw_via_stack(comp, rules, tx_mid, d_cy,
+                               "m0", rail_layer, direction="vertical")
+                lyr_rail = rules.layer(rail_layer)
+                rail_hx  = max(rail_w_min / 2, m0_hx)
+                if edge == "bottom":
+                    _rect(comp, tx_mid - rail_hx, tx_mid + rail_hx,
+                          rail_y0, d_cy, lyr_rail)
+                else:
+                    _rect(comp, tx_mid - rail_hx, tx_mid + rail_hx,
+                          d_cy, rail_y1, lyr_rail)
+            else:
+                # m0-only path: single m0 strap from terminal edge to rail.
+                if edge == "bottom":
+                    _rect(comp, tx_mid - m0_hx, tx_mid + m0_hx,
+                          rail_y0, dy1, lyr_m0)
+                else:
+                    _rect(comp, tx_mid - m0_hx, tx_mid + m0_hx,
+                          dy0, rail_y1, lyr_m0)
+
+    return []
