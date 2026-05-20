@@ -18,11 +18,20 @@ Each step blocks the next unless noted otherwise.
 | 1 | Port `cells/standard.py` + `cells/vias.py` + `cells/tap.py`       | **done**   | Includes the project-wide M0/M1/M2 rename. See "Cells port" below.                                                                                             |
 | 2 | Port `synth/loader.py` (topology YAML → typed specs; zero PDK dep) | **done**   | `LabelLayerSpec` fields renamed to `m1`/`m2` with `None` defaults; sky130 magic values removed.                                                                |
 | 3 | Port `synth/placer.py` + `synth/router.py` + `synth/auto_router.py` (+ `synthesizer.py`, `netlist.py`, `port_resolver.py`, `constraints.py`, `euler.py`, `geo/`) | pending    | Heavy lift: placer ≈ 725 LoC, router ≈ 1652 LoC, auto_router ≈ 874 LoC, plus support files. Consumes the loader output and drives the cell factories.          |
-| 4 | Port `templates/cells/*.yaml`                                     | pending    | 12 files (inverter, nand2/3, nor2/3, aoi21, oai21, bit_cell_6t, buffer, dido, row_driver, tap_cell). Rewrite layer refs to canonical `m0`/`m1`/`m2`/`contact`. Lands at `packages/lithos-layout/templates/cells/`. |
+| 4 | Port `templates/cells/*.yaml`                                     | **done**   | 12 files at `packages/lithos-layout/templates/cells/`. All sky130 layer names (`met1`/`met2`/`li1`/`mcon`/`licon1`) rewritten to canonical `m0`/`m1`/`m2`/`contact`/`via_m0_m1`; `label_layers` blocks removed (caller fills from PDK metadata). |
 | 5 | Port `repair/` heuristic primitives into `lithos-repair`           | pending    | See [REPAIR_ARCHITECTURE.md](REPAIR_ARCHITECTURE.md) for the redesigned plan. Old code is heuristic; new design is LLM understanding + closed action vocab + learned policy. |
 | 6 | Port `rl/` (env + policy + training) into `lithos-rl`              | pending    | Lives in `layout_gen` at commit `23cb778` on branch `drc-repair-engine`. See "RL phase status" below.                                                          |
 | 7 | Port `lvs/` (netgen + magic extraction) into `lithos-lvs`          | pending    | Needed to close the loop on routing quality.                                                                                                                   |
-| 8 | Bulk-LLM enrich the ~88 unstructured TSMC180 rules via Ollama      | optional   | Bumps the structured-constraint fraction above ~80%. Cosmetic but useful before any real-cell validation work.                                                 |
+| 8 | Bulk-LLM enrich the remaining unstructured rules via Ollama       | optional   | Edge-case operators (BRANCH chains, RECTANGLE shape checks, complex DENSITY pipelines) that the rule-based parser intentionally leaves no-branch — defer to LLM during DRC iteration rather than over-engineering the parser. |
+
+### Parser improvements (ingestion side, complete)
+
+The SVRF parser at [packages/lithos-ingest/lithos_ingest/parsers/svrf.py](../packages/lithos-ingest/lithos_ingest/parsers/svrf.py)
+covers the major rule sets the cell generator consumes
+(diff / well / poly / metal / via) at **90-100% structured-constraint
+coverage** on both validation corpora. Detailed phase plan +
+remaining-work map: [SVRF_PARSER_HANDOFF.md](SVRF_PARSER_HANDOFF.md).
+The unified PDK/layer descriptor: [LAYERS_FILE.md](LAYERS_FILE.md).
 
 ## Cells port (step 1, completed)
 
@@ -87,6 +96,33 @@ Tests: `tests/test_synth_loader.py` — 31 tests covering
 modes, routing hints (dict + list forms), label layers, diffusion
 merges, and search-dir resolution.
 
+## Templates port (step 4, completed)
+
+The 12 cell templates from `layout_gen/templates/cells/` were ported to
+`packages/lithos-layout/templates/cells/` (inverter, nand2/3, nor2/3,
+aoi21, oai21, buffer, bit_cell_6t, dido, row_driver, tap_cell).
+
+Rewrites:
+
+- `met1` → `m1`, `met2` → `m2` on every port / net / routing-hint
+  `layer:` field.
+- The `label_layers:` block was deleted from every template. Loader
+  defaults to `None` and the PDK adapter / port-emitter is responsible
+  for filling the GDS (layer, datatype) pair from PDK metadata —
+  templates themselves stay PDK-agnostic.
+- `tap_cell.yaml`'s sky130-flavoured `stack:` block (`licon1`, `li1`,
+  `mcon`, `met1`) was rewritten to canonical names (`contact`, `m0`,
+  `via_m0_m1`, `m1`). The loader does not currently parse the `stack:`
+  / `taps:` blocks — kept for forward compatibility.
+- Comments referencing `li1 / met1` rewritten to `m0 / m1`.
+
+Tests: `tests/test_templates_cells.py` — 86 tests covering load-by-name
+for every template, source-path location, forbidden-token scan over
+port/net/routing-hint layers, `label_layers` defaults, plus per-cell
+spot checks (inverter topology, NAND2 `MY` orientation, NOR2 sd_flip,
+bit_cell_6t routing layers + abutment, dido stacked layout +
+overrides, row_driver finger overrides, tap_cell raw-file scan).
+
 ## RL phase status (deferred to step 6)
 
 The RL stack referenced in step 6 currently lives in `layout_gen` on
@@ -135,7 +171,7 @@ parity-measurement infrastructure (step 5 above) doesn't exist yet.
   done.
 - Test-driven: every ported file gets a test in
   `packages/<pkg>/tests/`. The suite has to stay green
-  (`uv run pytest -q` should report ≥ 251 passing as of the loader
+  (`uv run pytest -q` should report ≥ 337 passing as of the templates
   port; later steps will grow this number).
 - Layer-naming compliance: any new file that mentions `li1`, `met1`,
   `mcon`, `licon1`, or `via1` outside a PDK YAML is a port mistake. See

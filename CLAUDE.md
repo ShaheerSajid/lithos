@@ -110,15 +110,25 @@ exposes everything the synthesiser/placer/router needs:
   hints, label layers, abutment, diffusion merges. All layer strings
   pass through `_normalize_layer` (`M1` → `m1`). Default search path:
   `packages/lithos-layout/templates/`; supply `search_dirs=[…]` to
-  resolve template names from elsewhere. Templates themselves are not
-  yet ported — see step 4 in the porting plan.
+  resolve template names from elsewhere.
+
+- **Shipped cell templates** (`packages/lithos-layout/templates/cells/`)
+  — 12 PDK-agnostic topology YAMLs: `inverter`, `nand2`, `nand3`,
+  `nor2`, `nor3`, `aoi21`, `oai21`, `buffer`, `bit_cell_6t`, `dido`,
+  `row_driver`, `tap_cell`. Resolve by bare name via `load_template`.
+  Templates carry no GDS (layer, datatype) tuples; the PDK adapter
+  fills those at render time.
 
 ## Repos and references
 
 - **Local clone**: `/home/shaheer/Documents/github/lithos`
 - **Remote**: `github.com/ShaheerSajid/lithos`
 - **Old code** (porting source): `/home/shaheer/Documents/github/layout_gen`
-- **TSMC180 Calibre deck** (validation corpus): `/home/shaheer/Downloads/pdk`
+- **Validation corpora**: real foundry decks the user holds **locally
+  only** — never checked in (vendor IP). Specific paths/filenames live
+  in agent memory, not in this repo. Treat published corpora (e.g. open
+  PDKs) as acceptable references; treat any commercial-foundry deck
+  name, document number, or filename as confidential.
 - **RL stack pre-port** (in `layout_gen`, branch `drc-repair-engine`):
   see [docs/PORTING_PLAN.md](docs/PORTING_PLAN.md) section "RL phase
   status".

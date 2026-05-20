@@ -38,3 +38,4 @@ packages/lithos-core/lithos_core/pdks/*/rules.db
 out/
 checkpoints/
 runs/
+.aider*
