@@ -74,6 +74,12 @@ def _rules(tmp_path: Path) -> BootstrapRules:
                                   op=">=", threshold_um=0.20)),
         ("V1.W.1",   WidthCheck(target=LayerRef(name="via_m0_m1"),
                                 op=">=", threshold_um=0.15)),
+        ("M2.W.1",   WidthCheck(target=LayerRef(name="m2"),
+                                op=">=", threshold_um=0.20)),
+        ("M2.S.1",   SpacingCheck(layer_a=LayerRef(name="m2"),
+                                  op=">=", threshold_um=0.20)),
+        ("V2.W.1",   WidthCheck(target=LayerRef(name="via_m1_m2"),
+                                op=">=", threshold_um=0.15)),
         ("NW.W.1",   WidthCheck(target=LayerRef(name="nwell"),
                                 op=">=", threshold_um=0.84)),
         ("NW.S.1",   SpacingCheck(layer_a=LayerRef(name="nwell"),
@@ -91,6 +97,7 @@ def _rules(tmp_path: Path) -> BootstrapRules:
         layers={"poly": (66, 20), "diff": (65, 20),
                 "contact": (66, 44), "m0": (67, 20), "m1": (68, 20),
                 "via_m0_m1": (67, 44),
+                "m2": (69, 20), "via_m1_m2": (68, 44),
                 "nwell": (64, 20), "nimplant": (93, 44), "pimplant": (94, 20)},
         grid={"manufacturing_um": 0.005},
         drc_decks={},
@@ -124,6 +131,9 @@ def _rules(tmp_path: Path) -> BootstrapRules:
         "m1.width_min_um":              "M1.W.1",
         "m1.spacing_min_um":            "M1.S.1",
         "via_m0_m1.size_um":            "V1.W.1",
+        "m2.width_min_um":              "M2.W.1",
+        "m2.spacing_min_um":            "M2.S.1",
+        "via_m1_m2.size_um":            "V2.W.1",
         "nwell.width_min_um":           "NW.W.1",
         "nwell.spacing_min_um":         "NW.S.1",
         "nwell.enclosure_of_pdiff_um":  "NW.E.D.1",
@@ -410,6 +420,54 @@ class TestPhaseHHints:
 
 
 # ── Track allocator helper ──────────────────────────────────────────────────
+
+class TestSynthesizeAllTemplates:
+    """End-to-end synthesis smoke test for every shipped template that
+    declares devices (``tap_cell`` has none and uses a different schema)."""
+
+    TEMPLATES = (
+        "inverter", "nand2", "nand3", "nor2", "nor3",
+        "aoi21", "oai21", "buffer", "row_driver",
+        "bit_cell_6t", "dido",
+    )
+
+    @pytest.mark.parametrize("name", TEMPLATES)
+    def test_template_synthesizes(self, tmp_path: Path, name: str):
+        rules    = _rules(tmp_path)
+        template = load_template(name)
+        result   = Synthesizer(rules).synthesize(
+            template, params={"w": 0.52, "l": 0.15},
+        )
+        polys = result.component.get_polygons(by="tuple")
+        # Every shipped cell exercises at least poly, diff, contact, m0, m1.
+        for layer in ("poly", "diff", "contact", "m0", "m1"):
+            assert rules.layer(layer) in polys, f"{name}: missing {layer}"
+
+    def test_bit_cell_6t_emits_upper_metal(self, tmp_path: Path):
+        """6T bit cell hits m2 (cross-couple + BL stripes)."""
+        rules  = _rules(tmp_path)
+        result = Synthesizer(rules).synthesize(
+            load_template("bit_cell_6t"),
+            params={"w": 0.52, "l": 0.15},
+        )
+        polys = result.component.get_polygons(by="tuple")
+        assert rules.layer("m2")        in polys
+        assert rules.layer("via_m0_m1") in polys
+        assert rules.layer("via_m1_m2") in polys
+
+    def test_dido_emits_cross_row_routing(self, tmp_path: Path):
+        """Multi-row dido exercises cross_row_connect + vertical_bus."""
+        rules  = _rules(tmp_path)
+        result = Synthesizer(rules).synthesize(
+            load_template("dido"),
+            params={"w": 0.52, "l": 0.15},
+        )
+        polys = result.component.get_polygons(by="tuple")
+        assert rules.layer("m1")        in polys
+        assert rules.layer("m2")        in polys
+        assert rules.layer("via_m0_m1") in polys
+        assert rules.layer("via_m1_m2") in polys
+
 
 class TestTrackAllocator:
     def test_returns_preferred_when_clear(self):

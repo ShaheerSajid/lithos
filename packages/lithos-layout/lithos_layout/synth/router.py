@@ -47,11 +47,18 @@ Currently registered
 * ``gate_to_drain``        — same-row gate-to-drain route through the
   N-P gap: poly-contact stub on the gate side, horizontal m0 (or
   upper-layer) trunk to the drain X, then vertical down/up to the
-  drain S/D centre. Handles AOI/OAI stage chaining.
-
-Remaining style handlers (cross-couple-gate, vertical-bus,
-cross-row-connect, poly-stub-m1-bus, vertical-m2-bus) land in
-subsequent commits.
+  drain S/D centre. Handles 2-stage chaining (buffer / row_driver).
+* ``vertical_bus``         — vertical m1 / m2 trunk tying S/D
+  terminals across multiple row pairs (BL-style buses).
+* ``cross_row_connect``    — L-route from an S/D source on one row
+  to gate(s) in other rows; gate landings come with their own
+  poly-contact stubs.
+* ``poly_stub_m1_bus``     — WL bus: poly→m1 via stack above each
+  gate body + full-cell-width m1 horizontal bus.
+* ``vertical_m2_bus``      — full-cell-height vertical stripe at a
+  single S/D terminal on an upper metal layer (BL stripe).
+* ``cross_couple_gate``    — 6T SRAM cross-couple: Q m0 bridge →
+  opposite inverter gate via an upper-metal L/U wire above the cell.
 """
 from __future__ import annotations
 
@@ -1061,5 +1068,536 @@ def _gate_to_drain(
     if route_layer != "m0":
         draw_via_stack(comp, rules, drain_cx, dd_cy,
                        route_layer, "m0", direction="vertical")
+
+    return []
+
+
+# ── vertical_bus ────────────────────────────────────────────────────────────
+
+@_style("vertical_bus")
+def _vertical_bus(
+    comp:   Any,
+    spec:   RoutingSpec,
+    placed: dict[str, PlacedDevice],
+    rules:  BootstrapRules,
+) -> list[PortCandidate]:
+    """Vertical metal bus tying S/D terminals across multiple row pairs.
+
+    Used for bitlines that span the full cell height. Drops a via stack
+    from ``m0`` up to ``spec.layer`` at each terminal, draws a horizontal
+    jog from each terminal X to ``bus_x`` (if they differ), then the
+    vertical trunk on ``spec.layer``.
+
+    Expected path: ``[Dev1.term, Dev2.term, ...]`` (≥ 2 terminals).
+
+    Extra fields
+    ------------
+    bus_x : float
+        Override X position for the trunk. Defaults to the mean of the
+        per-terminal X centres.
+    """
+    if len(spec.path) < 2:
+        return []
+
+    target_layer = spec.layer or "m1"
+    try:
+        target_w = rules.section(target_layer).get("width_min_um", 0.0) or 0.14
+    except Exception:                                # pragma: no cover
+        target_w = 0.14
+    trunk_hw  = target_w / 2
+    lyr_trunk = rules.layer(target_layer)
+
+    taps: list[tuple[float, float]] = []
+    for ref in spec.path:
+        try:
+            t = resolve_terminal(ref, placed, rules)
+        except (KeyError, ValueError):
+            continue
+        taps.append(((t.x0 + t.x1) / 2, (t.y0 + t.y1) / 2))
+
+    if len(taps) < 2:
+        return []
+
+    bus_x = float((spec.extra or {}).get(
+        "bus_x", sum(x for x, _ in taps) / len(taps),
+    ))
+
+    for tap_x, tap_y in taps:
+        lh = draw_via_stack(comp, rules, tap_x, tap_y, "m0", target_layer,
+                            direction="vertical")
+        trunk_hw = max(trunk_hw, lh)
+        if abs(tap_x - bus_x) > 0.001:
+            jx0 = min(tap_x, bus_x) - trunk_hw
+            jx1 = max(tap_x, bus_x) + trunk_hw
+            _rect(comp, jx0, jx1, tap_y - trunk_hw, tap_y + trunk_hw, lyr_trunk)
+
+    y_min = min(y for _, y in taps)
+    y_max = max(y for _, y in taps)
+    _rect(comp, bus_x - trunk_hw, bus_x + trunk_hw,
+                y_min - trunk_hw, y_max + trunk_hw, lyr_trunk)
+    return []
+
+
+# ── cross_row_connect ───────────────────────────────────────────────────────
+
+@_style("cross_row_connect")
+def _cross_row_connect(
+    comp:   Any,
+    spec:   RoutingSpec,
+    placed: dict[str, PlacedDevice],
+    rules:  BootstrapRules,
+) -> list[PortCandidate]:
+    """Connect an S/D source to gate(s) in other row pairs via L-route.
+
+    The source (first path element) is an S/D terminal whose m0 strap
+    already exists (placed by ``drain_bridge`` or the transistor
+    primitive). Each target (remaining path elements, typically
+    ``Dev.G``) gets a poly-contact stub with its own m0 landing + via
+    stack to the trunk layer. A metal bus then jogs from the source
+    track over to each target.
+
+    Expected path: ``[source.term, target1.G, target2.G, ...]``
+
+    Extra fields
+    ------------
+    track_x : float
+        X position for the vertical trunk. Defaults to the source X.
+    """
+    if len(spec.path) < 2:
+        return []
+
+    target_layer = spec.layer or "m1"
+    try:
+        target_w = rules.section(target_layer).get("width_min_um", 0.0) or 0.14
+    except Exception:                                # pragma: no cover
+        target_w = 0.14
+    trunk_hw  = target_w / 2
+    lyr_trunk = rules.layer(target_layer)
+
+    c_size = rules.contact["size_um"]
+    enc_poly_2adj, enc_poly_opp = rules.enclosure("contact", "enclosure_in_poly")
+    enc_m0_2adj, enc_m0_opp     = rules.enclosure("m0",      "enclosure_of_contact")
+    m0_sp = rules.m0.get("spacing_min_um", 0.17)
+
+    ch            = c_size / 2
+    cr_pad_half_x = (c_size + 2 * enc_poly_2adj) / 2
+    cr_pad_half_y = ch + (enc_poly_opp or enc_poly_2adj)
+    m0_lh_2adj    = ch + enc_m0_2adj
+    m0_lh_opp     = ch + (enc_m0_opp or enc_m0_2adj)
+
+    lyr_poly    = rules.layer("poly")
+    lyr_m0      = rules.layer("m0")
+    lyr_contact = rules.layer("contact")
+
+    try:
+        t_src = resolve_terminal(spec.path[0], placed, rules)
+    except (KeyError, ValueError):
+        return []
+    src_cx = (t_src.x0 + t_src.x1) / 2
+    src_cy = (t_src.y0 + t_src.y1) / 2
+
+    lh = draw_via_stack(comp, rules, src_cx, src_cy, "m0", target_layer,
+                        direction="vertical")
+    trunk_hw = max(trunk_hw, lh)
+
+    target_locs: list[tuple[float, float]] = []
+
+    for ref in spec.path[1:]:
+        parts = ref.split(".", 1)
+        if len(parts) != 2:
+            continue
+        dev = placed.get(parts[0])
+        if dev is None:
+            continue
+
+        term = parts[1]
+        if term == "G":
+            gx0, gx1 = global_gate_x(dev, 0)
+            gcx      = (gx0 + gx1) / 2
+
+            # Choose stub side opposite the source's row Y.
+            if src_cy < dev.y + dev.geom.total_y_um / 2:
+                stub_cy = global_poly_bottom(dev) - m0_sp - m0_lh_2adj
+            else:
+                stub_cy = global_poly_top(dev) + m0_sp + m0_lh_2adj
+
+            poly_top = global_poly_top(dev)
+            poly_bot = global_poly_bottom(dev)
+            if stub_cy > poly_top:
+                _rect(comp, gcx - cr_pad_half_x, gcx + cr_pad_half_x,
+                            poly_top, stub_cy + cr_pad_half_y, lyr_poly)
+            else:
+                _rect(comp, gcx - cr_pad_half_x, gcx + cr_pad_half_x,
+                            stub_cy - cr_pad_half_y, poly_bot, lyr_poly)
+
+            _rect(comp, gcx - ch, gcx + ch,
+                        stub_cy - ch, stub_cy + ch, lyr_contact)
+            _rect(comp, gcx - m0_lh_2adj, gcx + m0_lh_2adj,
+                        stub_cy - m0_lh_opp, stub_cy + m0_lh_opp, lyr_m0)
+            lh = draw_via_stack(comp, rules, gcx, stub_cy, "m0", target_layer)
+            trunk_hw = max(trunk_hw, lh)
+            target_locs.append((gcx, stub_cy))
+        else:
+            try:
+                t_tgt = resolve_terminal(ref, placed, rules)
+            except (KeyError, ValueError):
+                continue
+            tgt_cx = (t_tgt.x0 + t_tgt.x1) / 2
+            tgt_cy = (t_tgt.y0 + t_tgt.y1) / 2
+            lh = draw_via_stack(comp, rules, tgt_cx, tgt_cy, "m0", target_layer)
+            trunk_hw = max(trunk_hw, lh)
+            target_locs.append((tgt_cx, tgt_cy))
+
+    if not target_locs:
+        return []
+
+    track_x = float((spec.extra or {}).get("track_x", src_cx))
+    all_ys  = [src_cy] + [y for _, y in target_locs]
+    y_min, y_max = min(all_ys), max(all_ys)
+
+    if y_max > y_min:
+        _rect(comp, track_x - trunk_hw, track_x + trunk_hw,
+                    y_min - trunk_hw, y_max + trunk_hw, lyr_trunk)
+
+    if abs(src_cx - track_x) > 0.001:
+        jx0 = min(src_cx, track_x) - trunk_hw
+        jx1 = max(src_cx, track_x) + trunk_hw
+        _rect(comp, jx0, jx1, src_cy - trunk_hw, src_cy + trunk_hw, lyr_trunk)
+
+    for tgt_x, tgt_y in target_locs:
+        if abs(tgt_x - track_x) > 0.001:
+            jx0 = min(tgt_x, track_x) - trunk_hw
+            jx1 = max(tgt_x, track_x) + trunk_hw
+            _rect(comp, jx0, jx1, tgt_y - trunk_hw, tgt_y + trunk_hw, lyr_trunk)
+
+    return []
+
+
+# ── poly_stub_m1_bus ────────────────────────────────────────────────────────
+
+@_style("poly_stub_m1_bus")
+def _poly_stub_m1_bus(
+    comp:   Any,
+    spec:   RoutingSpec,
+    placed: dict[str, PlacedDevice],
+    rules:  BootstrapRules,
+) -> list[PortCandidate]:
+    """WL-style bus: poly-contact stub above each gate + full-cell-width m1 bus.
+
+    Each gate in ``spec.path`` gets a poly pad extended above its
+    transistor body with a poly→m1 via stack on top; the resulting
+    m1 (or higher) bus stretches across the cell.
+
+    Expected path: ``[Dev_A.G, Dev_B.G, …]``.
+
+    Extra fields
+    ------------
+    cell_x0, cell_x1 : float
+        Cell X bounds for the bus extent. Defaults to the min/max
+        stub X with one half-width margin.
+    """
+    from lithos_layout.cells.vias import via_poly_m1
+
+    c_size = rules.contact["size_um"]
+    enc_poly_2adj, enc_poly_opp = rules.enclosure("contact", "enclosure_in_poly")
+    enc_m0_2adj, _              = rules.enclosure("m0",      "enclosure_of_contact")
+    enc_m1_v_2adj, _            = rules.enclosure("m1",      "enclosure_of_via_m0_m1")
+
+    ch          = c_size / 2
+    m0_lh_2adj  = ch + enc_m0_2adj
+    m1_lh       = ch + enc_m1_v_2adj
+    pad_half_x  = (c_size + 2 * enc_poly_2adj) / 2
+    pad_half_y  = ch + (enc_poly_opp or enc_poly_2adj)
+    m0_sp       = rules.m0.get("spacing_min_um", 0.17)
+    poly_sp     = rules.poly.get("spacing_min_um", 0.21)
+
+    lyr_poly = rules.layer("poly")
+    via_cell = via_poly_m1(rules)
+    all_gates = _collect_gate_poly_ranges(placed)
+    stub_locs: list[tuple[float, float]] = []
+
+    for ref in spec.path:
+        parts = ref.split(".", 1)
+        if len(parts) != 2 or parts[1] != "G":
+            continue
+        dev = placed.get(parts[0])
+        if dev is None:
+            continue
+
+        gx0, gx1 = global_gate_x(dev, 0)
+        gcx = (gx0 + gx1) / 2
+        gcx = _nudge_for_poly_spacing(gcx, pad_half_x, (gx0, gx1),
+                                      all_gates, poly_sp)
+        pg_ty = global_poly_top(dev)
+
+        _, diff_y1 = global_diff_y(dev, rules)
+        stub_cy_min = diff_y1 + m0_sp + m0_lh_2adj
+        stub_cy     = max(pg_ty + pad_half_y, stub_cy_min)
+
+        if stub_cy > pg_ty:
+            _rect(comp, gcx - pad_half_x, gcx + pad_half_x,
+                        pg_ty, stub_cy, lyr_poly)
+
+        ref_cell = comp.add_ref(via_cell)
+        ref_cell.move((gcx, stub_cy))
+        stub_locs.append((gcx, stub_cy))
+
+    if not stub_locs:
+        return []
+
+    bus_layer = spec.layer or "m1"
+    bus_half  = m1_lh
+    for gcx, scy in stub_locs:
+        lh = draw_via_stack(comp, rules, gcx, scy, "m1", bus_layer)
+        bus_half = max(bus_half, lh)
+
+    try:
+        bus_w_min = rules.section(bus_layer).get("width_min_um", 0.0) or 0.0
+    except Exception:                                # pragma: no cover
+        bus_w_min = 0.0
+    bus_half = max(bus_half, bus_w_min / 2)
+
+    lyr_bus = rules.layer(bus_layer)
+    xs    = [gcx for gcx, _ in stub_locs]
+    cy    = stub_locs[0][1]
+    extra = spec.extra or {}
+    wl_x0 = extra.get("cell_x0", min(xs) - bus_half)
+    wl_x1 = extra.get("cell_x1", max(xs) + bus_half)
+    wl_y0 = cy - bus_half
+    wl_y1 = cy + bus_half
+    _rect(comp, wl_x0, wl_x1, wl_y0, wl_y1, lyr_bus)
+
+    return [PortCandidate(
+        net          = spec.net,
+        location_key = "wl_bus_center",
+        x            = wl_x0,
+        y            = (wl_y0 + wl_y1) / 2,
+        layer        = bus_layer,
+        width        = wl_y1 - wl_y0,
+        orientation  = 180,
+    )]
+
+
+# ── vertical_m2_bus ─────────────────────────────────────────────────────────
+
+@_style("vertical_m2_bus")
+def _vertical_m2_bus(
+    comp:   Any,
+    spec:   RoutingSpec,
+    placed: dict[str, PlacedDevice],
+    rules:  BootstrapRules,
+) -> list[PortCandidate]:
+    """Full-cell-height vertical stripe at a single S/D terminal.
+
+    Drops a via stack from ``m0`` up to ``spec.layer`` (defaults to
+    ``m2``) at the terminal centre, then draws the stripe at that X
+    spanning ``[cell_y0 - rail_h, cell_y1 + rail_h]``.
+
+    Expected path: ``[Dev.Terminal]`` (single element).
+    Extra: ``cell_y0`` / ``cell_y1`` set the stripe Y range.
+    """
+    if not spec.path:
+        return []
+
+    try:
+        t = resolve_terminal(spec.path[0], placed, rules)
+    except (KeyError, ValueError) as exc:
+        warnings.warn(
+            f"vertical_m2_bus (net={spec.net!r}): {exc}; skipped.",
+            stacklevel=3,
+        )
+        return []
+
+    cx = (t.x0 + t.x1) / 2
+    cy = (t.y0 + t.y1) / 2
+
+    target_layer = spec.layer or "m2"
+    top_half = draw_via_stack(comp, rules, cx, cy, "m0", target_layer,
+                              direction="vertical")
+    try:
+        target_w_min = rules.section(target_layer).get("width_min_um", 0.0) or 0.14
+    except Exception:                                # pragma: no cover
+        target_w_min = 0.14
+    stripe_hw = max(target_w_min / 2, top_half)
+
+    rail_h = max(
+        rules.m1.get("width_min_um", 0.14),
+        rules.m0.get("width_min_um", 0.17),
+    )
+
+    extra     = spec.extra or {}
+    stripe_y0 = extra.get("cell_y0", t.y0) - rail_h
+    stripe_y1 = extra.get("cell_y1", t.y1) + rail_h
+
+    lyr_target = rules.layer(target_layer)
+    _rect(comp, cx - stripe_hw, cx + stripe_hw, stripe_y0, stripe_y1, lyr_target)
+
+    return [PortCandidate(
+        net          = spec.net,
+        location_key = f"{spec.net}_bitline_center",
+        x            = cx,
+        y            = (stripe_y0 + stripe_y1) / 2,
+        layer        = target_layer,
+        width        = stripe_hw * 2,
+        orientation  = 90,
+    )]
+
+
+# ── cross_couple_gate ───────────────────────────────────────────────────────
+
+@_style("cross_couple_gate")
+def _cross_couple_gate(
+    comp:   Any,
+    spec:   RoutingSpec,
+    placed: dict[str, PlacedDevice],
+    rules:  BootstrapRules,
+) -> list[PortCandidate]:
+    """6T SRAM cross-couple: Q (or Q\\_) m0 node → opposite inverter gates.
+
+    Geometry:
+
+    * via stack from m0 → ``spec.layer`` at the Q m0 bridge centre;
+    * gate poly extended above the PMOS body with contact + m0 landing
+      + via stack at each target gate;
+    * L-shape (``track=0``) or U-shape (``track=1``) wire on
+      ``spec.layer`` connecting source to gate(s).
+
+    The source device is identified by net membership: the NMOS pass
+    gate's source AND the NMOS pull-down's drain are both on
+    ``spec.net``. The Q m0 bridge sits between those two diffusions.
+
+    Path: ``[<hint>, PD_X.G, PU_X.G]``. ``track`` selects the wire's
+    horizontal Y level.
+    """
+    target_layer = spec.layer or "m2"
+    try:
+        target_w  = rules.section(target_layer).get("width_min_um", 0.0) or 0.14
+        target_sp = rules.section(target_layer).get("spacing_min_um", 0.0) or 0.14
+    except Exception:                                # pragma: no cover
+        target_w, target_sp = 0.14, 0.14
+    lyr_target = rules.layer(target_layer)
+
+    c_size = rules.contact["size_um"]
+    enc_poly_2adj, enc_poly_opp = rules.enclosure("contact", "enclosure_in_poly")
+    enc_m0_2adj,   enc_m0_opp   = rules.enclosure("m0",      "enclosure_of_contact")
+    enc_m1_v_2adj, _            = rules.enclosure("m1",      "enclosure_of_via_m0_m1")
+    m1_sp = rules.m1.get("spacing_min_um", 0.14)
+    ch    = c_size / 2
+
+    cc_pad_half_x = (c_size + 2 * enc_poly_2adj) / 2
+    cc_pad_half_y = ch + (enc_poly_opp or enc_poly_2adj)
+    rail_h = max(
+        rules.m1.get("width_min_um", 0.14),
+        rules.m0.get("width_min_um", 0.17),
+    )
+    m0_land_half_2adj = ch + enc_m0_2adj
+    m0_land_half_opp  = ch + (enc_m0_opp or enc_m0_2adj)
+
+    # Largest landing pad along m0 → target_layer (for trunk clearance).
+    transitions   = via_stack_between(rules, "m0", target_layer)
+    max_land_half = ch + enc_m1_v_2adj
+    for t in transitions:
+        vh = t.via_size / 2
+        for metal, enc in ((t.lower_metal, t.enc_lower),
+                           (t.upper_metal, t.enc_upper)):
+            try:
+                mw = rules.section(metal).get("width_min_um", 0.0) or 0.0
+            except Exception:                        # pragma: no cover
+                mw = 0.0
+            max_land_half = max(max_land_half, vh + enc, mw / 2)
+
+    poly_sp = rules.poly.get("spacing_min_um", 0.21)
+
+    lyr_poly    = rules.layer("poly")
+    lyr_m0      = rules.layer("m0")
+    lyr_contact = rules.layer("contact")
+
+    all_gates = _collect_gate_poly_ranges(placed)
+
+    pmos_devs = [d for d in placed.values() if d.spec.device_type == "pmos"]
+    if not pmos_devs:
+        return []
+    cell_ytop = max(d.y + d.geom.total_y_um for d in pmos_devs)
+    gsc_y = cell_ytop + rail_h + m1_sp + max_land_half
+
+    # Locate the Q-node devices: NMOS PG (source=net) + NMOS PD (drain=net).
+    pg_dev = pd_dev = None
+    for dev in placed.values():
+        if dev.spec.device_type != "nmos":
+            continue
+        if dev.spec.terminals.get("S") == spec.net:
+            pg_dev = dev
+        if dev.spec.terminals.get("D") == spec.net:
+            pd_dev = dev
+
+    if pg_dev is None or pd_dev is None:
+        warnings.warn(
+            f"cross_couple_gate: cannot locate Q-node devices for net "
+            f"{spec.net!r}; skipped.",
+            stacklevel=3,
+        )
+        return []
+
+    t_drain  = resolve_terminal(f"{pd_dev.name}.D", placed, rules)
+    t_source = resolve_terminal(f"{pg_dev.name}.S", placed, rules)
+    q_x      = (t_drain.x1 + t_source.x0) / 2
+    nd_ymid  = (t_drain.y0 + t_drain.y1) / 2
+
+    src_top_half = draw_via_stack(comp, rules, q_x, nd_ymid,
+                                  "m0", target_layer, direction="vertical")
+
+    gate_xs: list[float] = []
+    seen_x: set[int] = set()
+    gate_top_half = 0.0
+
+    for ref in spec.path:
+        parts = ref.split(".", 1)
+        if len(parts) != 2 or parts[1] != "G":
+            continue
+        dev = placed.get(parts[0])
+        if dev is None:
+            continue
+
+        gx0, gx1 = global_gate_x(dev, 0)
+        gcx      = (gx0 + gx1) / 2
+        gcx_nm   = round(gcx * 1000)
+        if gcx_nm in seen_x:
+            continue
+        seen_x.add(gcx_nm)
+
+        gcx = _nudge_for_poly_spacing(gcx, cc_pad_half_x, (gx0, gx1),
+                                      all_gates, poly_sp)
+        gate_xs.append(gcx)
+
+        _rect(comp, gcx - cc_pad_half_x, gcx + cc_pad_half_x,
+                    cell_ytop, gsc_y + cc_pad_half_y, lyr_poly)
+        _rect(comp, gcx - ch, gcx + ch,
+                    gsc_y - ch, gsc_y + ch, lyr_contact)
+        _rect(comp, gcx - m0_land_half_2adj, gcx + m0_land_half_2adj,
+                    gsc_y - m0_land_half_opp, gsc_y + m0_land_half_opp, lyr_m0)
+        lh = draw_via_stack(comp, rules, gcx, gsc_y, "m0", target_layer)
+        gate_top_half = max(gate_top_half, lh)
+
+    if not gate_xs:
+        return []
+
+    gcx_target   = gate_xs[0]
+    track        = int((spec.extra or {}).get("track", 0))
+    landing_half = max(gate_top_half, src_top_half, target_w / 2)
+    track_pitch  = landing_half + target_sp + target_w / 2
+    route_y      = gsc_y + track * track_pitch
+
+    hw   = target_w / 2
+    x_lo = min(q_x, gcx_target) - hw
+    x_hi = max(q_x, gcx_target) + hw
+
+    if track == 0:
+        _rect(comp, q_x - hw, q_x + hw, nd_ymid, route_y + hw, lyr_target)
+        _rect(comp, x_lo, x_hi, route_y - hw, route_y + hw, lyr_target)
+    else:
+        _rect(comp, q_x - hw, q_x + hw, nd_ymid, route_y + hw, lyr_target)
+        _rect(comp, x_lo, x_hi, route_y - hw, route_y + hw, lyr_target)
+        _rect(comp, gcx_target - hw, gcx_target + hw,
+                    gsc_y - hw, route_y + hw, lyr_target)
 
     return []
