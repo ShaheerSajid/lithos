@@ -1,0 +1,86 @@
+# lithos PDK metadata — SkyWater 130 nm (sky130A)
+#
+# Layer numbers + per-device structural facts. DRC rule thresholds live
+# in the sibling RuleDB (see scripts/validate_sky130.py for how it's
+# populated). Layer names follow the lithos canonical metal stack
+# (m0/m1/m2 + contact + via_mX_mY); the per-PDK aliases (li1/met1/...)
+# never appear in lithos code.
+
+name: sky130A
+version: "1.0.5"
+
+# ── Layer map: lithos canonical name → (GDS layer, GDS datatype) ─────────────
+layers:
+  # Active / gate
+  poly:       {layer: 66, datatype: 20}
+  diff:       {layer: 65, datatype: 20}
+  tap:        {layer: 65, datatype: 44}
+  nwell:      {layer: 64, datatype: 20}
+  nimplant:   {layer: 93, datatype: 44}    # nsdm in sky130 vocabulary
+  pimplant:   {layer: 94, datatype: 20}    # psdm
+  npc:        {layer: 95, datatype: 20}    # nitride poly cut (sky130-only)
+
+  # Stack
+  contact:    {layer: 66, datatype: 44}    # licon1 — poly/diff → m0 cut
+  m0:         {layer: 67, datatype: 20}    # li1 — local interconnect
+  via_m0_m1:  {layer: 67, datatype: 44}    # mcon
+  m1:         {layer: 68, datatype: 20}    # met1
+  via_m1_m2:  {layer: 68, datatype: 44}    # via1
+  m2:         {layer: 69, datatype: 20}    # met2
+  via_m2_m3:  {layer: 69, datatype: 44}    # via2
+  m3:         {layer: 70, datatype: 20}    # met3
+  via_m3_m4:  {layer: 70, datatype: 44}    # via3
+  m4:         {layer: 71, datatype: 20}    # met4
+  via_m4_m5:  {layer: 71, datatype: 44}    # via4
+  m5:         {layer: 72, datatype: 20}    # met5
+
+# ── Port label layers (per routing layer) ────────────────────────────────────
+label_layers:
+  poly: [66, 16]
+  m0:   [67, 16]
+  m1:   [68, 16]
+  m2:   [69, 16]
+  m3:   [70, 16]
+  m4:   [71, 16]
+  m5:   [72, 16]
+
+# ── Grid ─────────────────────────────────────────────────────────────────────
+grid:
+  manufacturing_um: 0.005
+  routing_um:       0.005
+
+# ── DRC decks ────────────────────────────────────────────────────────────────
+# Override via env: DRC_DECK_KLAYOUT / DRC_DECK_MAGIC.
+drc_decks:
+  klayout: ${PDK_ROOT}/sky130A/libs.tech/klayout/drc/sky130A_mr.drc
+  magic:   ${PDK_ROOT}/sky130A/libs.tech/magic/sky130A.tech
+
+# ── Per-device structural facts ──────────────────────────────────────────────
+devices:
+  nmos:
+    diff_layer:       diff
+    gate_layer:       poly
+    implant_layer:    nimplant
+    bulk_layer:       pimplant
+    nwell:            false
+    w_finger_max_um:  2.0
+    sd_length_min_um: 0.29
+    lvs_model_name:   sky130_fd_pr__nfet_01v8
+  pmos:
+    diff_layer:       diff
+    gate_layer:       poly
+    implant_layer:    pimplant
+    bulk_layer:       nimplant
+    nwell:            true
+    w_finger_max_um:  2.0
+    sd_length_min_um: 0.29
+    lvs_model_name:   sky130_fd_pr__pfet_01v8
+
+# ── Preferred routing directions (for future placer/router use) ──────────────
+preferred_direction:
+  m0: ""              # local interconnect — no preferred direction
+  m1: horizontal      # power rails, WL
+  m2: vertical        # bitlines, signal buses
+  m3: horizontal
+  m4: vertical
+  m5: horizontal

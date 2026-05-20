@@ -1,0 +1,79 @@
+# lithos bootstrap mapping — SkyWater 130 nm (sky130A)
+#
+# Maps lithos semantic dotted-keys to canonical rule codes. The rule
+# codes here follow the sky130 PDK design-rule numbering (poly.1a,
+# licon.1, m1.4, etc.) so a freshly-ingested sky130 RuleDB will satisfy
+# them out of the box. When seeding the DB by hand (see
+# scripts/validate_sky130.py) the same codes are used as the rule
+# identifiers.
+#
+# Thresholds come from the public sky130A design rule manual; see
+# https://skywater-pdk.readthedocs.io/.
+
+mapping:
+  # ── poly ──
+  poly.width_min_um:                   poly.1a
+  poly.spacing_min_um:                 poly.2
+  poly.endcap_over_diff_um:            poly.8
+  poly.extension_of_diff_um:           poly.7
+
+  # ── diff ──
+  diff.width_min_um:                   difftap.1
+  diff.spacing_min_um:                 difftap.3
+  diff.extension_past_poly_um:         difftap.2b
+  diff.channel_width_min_um:           difftap.2
+
+  # ── contact (licon1: poly/diff → m0) ──
+  contact.size_um:                     licon.1
+  contact.spacing_um:                  licon.2
+  contact.enclosure_in_diff_um:        licon.5a
+  contact.enclosure_in_diff_2adj_um:   licon.5c
+  contact.enclosure_in_poly_um:        licon.8
+  contact.enclosure_in_poly_2adj_um:   licon.8a
+
+  # ── m0 (li1) ──
+  m0.width_min_um:                     li.1
+  m0.spacing_min_um:                   li.2
+  m0.area_min_um2:                     li.6
+  m0.enclosure_of_contact_um:          li.5
+  m0.enclosure_of_contact_2adj_um:     li.5a
+
+  # ── via_m0_m1 (mcon) ──
+  via_m0_m1.size_um:                   mcon.1
+  via_m0_m1.spacing_um:                mcon.2
+
+  # ── m1 (met1) ──
+  m1.width_min_um:                     m1.1
+  m1.spacing_min_um:                   m1.2
+  m1.area_min_um2:                     m1.6
+  m1.enclosure_of_via_m0_m1_um:        m1.4
+  m1.enclosure_of_via_m0_m1_2adj_um:   m1.5
+
+  # ── via_m1_m2 (via1) ──
+  via_m1_m2.size_um:                   via.1a
+  via_m1_m2.spacing_um:                via.2
+  via_m1_m2.enclosure_in_m1_um:        via.4a
+  via_m1_m2.enclosure_in_m1_2adj_um:   via.5a
+
+  # ── m2 (met2) ──
+  m2.width_min_um:                     m2.1
+  m2.spacing_min_um:                   m2.2
+  m2.area_min_um2:                     m2.6
+  m2.enclosure_of_via_m1_m2_um:        m2.4
+  m2.enclosure_of_via_m1_m2_2adj_um:   m2.5
+
+  # ── nwell ──
+  nwell.width_min_um:                  nwell.1
+  nwell.spacing_min_um:                nwell.2
+  nwell.enclosure_of_pdiff_um:         nwell.5
+  nwell.ndiff_to_nwell_um:             difftap.9
+
+  # ── implant (nsdm/psdm) ──
+  implant.width_min_um:                nsd.1
+  implant.spacing_min_um:              nsd.2
+  implant.enclosure_of_diff_um:        nsd.5a
+
+  # ── tap (well / substrate contact) ──
+  tap.enclosure_of_contact_um:         licon.7
+  tap.spacing_to_diff_um:              difftap.3
+  tap.ptap_to_nwell_um:                difftap.11
