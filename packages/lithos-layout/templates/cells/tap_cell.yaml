@@ -1,0 +1,36 @@
+# lithos cell topology template — standalone well/substrate tap cell
+#
+# Provides P+ substrate tap (VSS bias) and N+ nwell tap (VDD bias).
+# Tiled alongside logic cells at regular intervals for latch-up prevention.
+# All dimensions derived from PDK rules — no hardcoded values.
+
+name: tap_cell
+description: Substrate and N-well tap cell for well biasing
+
+# Tap configuration — which taps to generate
+taps:
+  ptap:                       # P+ substrate tap (VSS / GND bias)
+    implant: pimplant
+    rail: bottom
+    net: GND
+  ntap:                       # N+ nwell tap (VDD bias, inside nwell)
+    implant: nimplant
+    rail: top
+    net: VDD
+
+# Contact stack layers (bottom to top)
+# Each tap draws: tap diffusion → contact → m0 → via_m0_m1 → m1
+stack:
+  diffusion: tap              # tap diffusion layer
+  contact:   contact          # poly/diff → m0 contact cut
+  li:        m0               # local interconnect
+  via:       via_m0_m1        # m0 → m1 via
+  metal:     m1               # power rail metal
+
+nets:
+  VDD: {type: power, rail: top}
+  GND: {type: power, rail: bottom}
+
+ports:
+  GND: {side: south}
+  VDD: {side: north}

@@ -1,0 +1,39 @@
+# lithos cell topology template — CMOS inverter
+#
+# Single NMOS + PMOS, shared gate (IN), shared drain (OUT).
+#
+# Placement (NMOS row):  N
+# Placement (PMOS row):  P   (gate-aligned with N)
+
+name: cmos_inverter
+description: >
+  Single-stage CMOS inverter (1 NMOS + 1 PMOS, shared gate).
+
+devices:
+  N: {template: planar_mosfet, type: nmos, terminals: {G: IN, D: OUT, S: GND}}
+  P: {template: planar_mosfet, type: pmos, terminals: {G: IN, D: OUT, S: VDD}}
+
+nets:
+  VDD: {type: power, rail: top}
+  GND: {type: power, rail: bottom}
+  IN:  {type: signal}
+  OUT: {type: signal}
+
+# ── Placement: explicit per-device directives ──────────────────────────────
+
+placement_logic:
+  # ── NMOS row ─────────────────────────────────────────────────────────────
+  - name: N
+    origin: [0, 0]
+
+  # ── PMOS row (gate-aligned with NMOS) ────────────────────────────────────
+  - name: P
+    relative_to: N
+    relation: align_gate
+    alignment: gate
+
+ports:
+  IN:  {side: west,  terminal: N.G}
+  OUT: {side: east,  terminal: N.D}
+  GND: {side: south, layer: m1}
+  VDD: {side: north, layer: m1}

@@ -1,0 +1,146 @@
+# lithos cell topology template — SRAM DIDO column peripheral (stacked)
+#
+# Stacked multi-row layout.  Zero routing directives — the auto-router
+# infers all intra-pair bridges, cross-row connections (m1/m2), and
+# bitline vertical buses from device connectivity.
+#
+# Cell width fixed at 3.600 um to match bit_cell_6t column pitch.
+
+name: dido
+description: SRAM column peripheral — precharge, column select, read/write pass (stacked)
+
+cell_dimensions:
+  width: 3.600     # match bitcell pitch for array integration
+
+abutment:
+  pitch_x: 3.600
+  mirror_x: true
+  rail_align: true
+
+devices:
+  # PCHG buffer inverter
+  N_PB:  {template: planar_mosfet, type: nmos, terminals: {G: PCHG, D: net5, S: VSS}}
+  P_PB:  {template: planar_mosfet, type: pmos, terminals: {G: PCHG, D: net5, S: VDD}}
+
+  # PCHG driver inverter
+  N_PD:  {template: planar_mosfet, type: nmos, terminals: {G: net5, D: net6, S: VSS}}
+  P_PD:  {template: planar_mosfet, type: pmos, terminals: {G: net5, D: net6, S: VDD}}
+
+  # Precharge PMOS
+  P_PC0: {template: planar_mosfet, type: pmos, terminals: {G: net6, D: BL_,  S: VDD}}
+  P_PC1: {template: planar_mosfet, type: pmos, terminals: {G: net6, D: BL,   S: BL_}}
+  P_PC2: {template: planar_mosfet, type: pmos, terminals: {G: net6, D: BL,   S: VDD}}
+
+  # Column select buffer
+  N_SB:  {template: planar_mosfet, type: nmos, terminals: {G: SEL, D: net4, S: VSS}}
+  P_SB:  {template: planar_mosfet, type: pmos, terminals: {G: SEL, D: net4, S: VDD}}
+
+  # Column select inverter
+  N_SI:  {template: planar_mosfet, type: nmos, terminals: {G: net4, D: net3, S: VSS}}
+  P_SI:  {template: planar_mosfet, type: pmos, terminals: {G: net4, D: net3, S: VDD}}
+
+  # Read pass PMOS
+  P_RP0: {template: planar_mosfet, type: pmos, terminals: {G: net4, D: BL_,  S: DR_}}
+  P_RP1: {template: planar_mosfet, type: pmos, terminals: {G: net4, D: DR,   S: BL}}
+
+  # Write-enable NAND2: net1 = !(net3 & WREN)
+  N_NA:  {template: planar_mosfet, type: nmos, terminals: {G: net3, D: nd15, S: VSS}}
+  N_NB:  {template: planar_mosfet, type: nmos, terminals: {G: WREN, D: net1, S: nd15}}
+  P_NA:  {template: planar_mosfet, type: pmos, terminals: {G: net3, D: net1, S: VDD}}
+  P_NB:  {template: planar_mosfet, type: pmos, terminals: {G: WREN, D: net1, S: VDD}}
+
+  # Write data NOT: net2 = !net1
+  N_NT:  {template: planar_mosfet, type: nmos, terminals: {G: net1, D: net2, S: VSS}}
+  P_NT:  {template: planar_mosfet, type: pmos, terminals: {G: net1, D: net2, S: VDD}}
+
+  # Write pass NMOS
+  N_WP0: {template: planar_mosfet, type: nmos, terminals: {G: net2, D: BL,   S: DW}}
+  N_WP1: {template: planar_mosfet, type: nmos, terminals: {G: net2, D: DW_,  S: BL_}}
+
+nets:
+  VDD:  {type: power, rail: top}
+  VSS:  {type: power, rail: bottom}
+  PCHG: {type: signal}
+  WREN: {type: signal}
+  SEL:  {type: signal}
+  BL:   {type: signal}
+  BL_:  {type: signal}
+  DW:   {type: signal}
+  DW_:  {type: signal}
+  DR:   {type: signal}
+  DR_:  {type: signal}
+
+params:
+  defaults: {w_N: 0.52, w_P: 0.42, l: 0.15}
+  overrides:
+    N_WP0: {w: 1.0}
+    N_WP1: {w: 1.0}
+
+placement:
+  mode: stacked
+  row_pairs:
+    - id: 0
+      nmos: [N_PB, N_PD]
+      pmos: [P_PB, P_PD]
+      sd_flip: {N_PB: true, P_PB: true}
+      rail_top: VDD
+
+    - id: 1
+      nmos: [N_SB, N_SI]
+      pmos: [P_SB, P_SI]
+      sd_flip: {N_SB: true, P_SB: true}
+      rail_top: VSS
+
+    - id: 2
+      nmos: [N_NA, N_NB]
+      pmos: [P_NA, P_NB]
+      sd_flip: {P_NB: true}
+      rail_top: VSS
+
+    - id: 3
+      nmos: [N_NT]
+      pmos: [P_NT]
+      rail_top: VDD
+
+    - id: 4
+      nmos: []
+      pmos: [P_PC0, P_PC1]
+
+    - id: 5
+      nmos: []
+      pmos: [P_PC2]
+      rail_top: VDD
+
+    - id: 6
+      nmos: []
+      pmos: [P_RP0]
+
+    - id: 7
+      nmos: []
+      pmos: [P_RP1]
+
+    - id: 8
+      nmos: [N_WP0]
+      pmos: []
+
+    - id: 9
+      nmos: [N_WP1]
+      pmos: []
+
+  constraints:
+    inter_cell_gap:
+      min: "rules.diff.spacing_min_um - 2*rules.poly.endcap_over_diff_um + 2*rules.diff.extension_past_poly_um"
+    inter_row_gap: "rules.diff.spacing_min_um"
+
+ports:
+  PCHG: {side: west,  layer: m1}
+  SEL:  {side: west,  layer: m1}
+  WREN: {side: west,  layer: m1}
+  BL:   {side: north, layer: m2, terminal: P_PC1.D}
+  BL_:  {side: north, layer: m2, terminal: P_PC0.D}
+  DR:   {side: south, layer: m2, terminal: P_RP1.D}
+  DR_:  {side: south, layer: m2, terminal: P_RP0.S}
+  DW:   {side: south, layer: m2, terminal: N_WP0.S}
+  DW_:  {side: south, layer: m2, terminal: N_WP1.D}
+  VDD:  {side: north, layer: m1}
+  VSS:  {side: south, layer: m1}

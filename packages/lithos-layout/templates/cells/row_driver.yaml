@@ -1,0 +1,73 @@
+# lithos cell topology template — SRAM row driver
+#
+# B = NOT(NAND2(A, WLEN))
+# NAND2 stage followed by high-drive inverter.
+#
+# Placement (NMOS row):  N_A | N_WL | N_INV
+# Placement (PMOS row):  P_A | P_WL | P_INV   (gate-aligned, P_INV is 4-finger)
+#                         ↕ gate ↕ gate ↕ gate
+
+name: row_driver
+description: >
+  SRAM row driver — NAND2(A, WLEN) followed by high-drive inverter.
+  Implements: net1 = NAND2(A, WLEN), B = NOT(net1).
+
+devices:
+  # NAND2 stage
+  N_A:   {template: planar_mosfet, type: nmos, terminals: {G: A,    D: net1, S: GND}}
+  N_WL:  {template: planar_mosfet, type: nmos, terminals: {G: WLEN, D: Y_nd, S: net1}}
+  P_A:   {template: planar_mosfet, type: pmos, terminals: {G: A,    D: Y_nd, S: VDD}}
+  P_WL:  {template: planar_mosfet, type: pmos, terminals: {G: WLEN, D: Y_nd, S: VDD}}
+
+  # Output inverter stage (wider PMOS for drive strength)
+  N_INV: {template: planar_mosfet, type: nmos, terminals: {G: Y_nd, D: B, S: GND}, w: 2.60,  fingers: 5}
+  P_INV: {template: planar_mosfet, type: pmos, terminals: {G: Y_nd, D: B, S: VDD}, w: 2.60,  fingers: 5}
+
+nets:
+  VDD:  {type: power, rail: top, layer: m1}
+  GND:  {type: power, rail: bottom, layer: m1}
+  A:    {type: signal}
+  WLEN: {type: signal}
+  B:    {type: signal}
+  Y_nd: {type: internal, layer: m1}
+  net1: {type: internal}
+
+# ── Placement: explicit per-device directives ──────────────────────────────
+
+placement_logic:
+  # ── NMOS row (left to right) ─────────────────────────────────────────────
+  - name: N_A
+    origin: [0, 0]
+
+  - name: N_WL
+    relative_to: N_A
+    relation: abut_x
+    alignment: bottom
+
+  - name: N_INV
+    relative_to: N_WL
+    alignment: bottom
+
+  # ── PMOS row (gate-aligned with NMOS) ────────────────────────────────────
+  - name: P_A
+    relative_to: N_A
+    relation: align_gate
+    alignment: gate
+
+  - name: P_WL
+    relative_to: N_WL
+    relation: align_gate
+    alignment: gate
+    sd_flip: true  # PMOS source/drain flipped for better layout
+
+  - name: P_INV
+    relative_to: N_INV
+    relation: align_gate
+    alignment: gate
+
+ports:
+  A:    {side: west,  terminal: N_A.G}
+  WLEN: {side: west,  terminal: N_WL.G}
+  B:    {side: east,  terminal: N_INV.D}
+  GND:  {side: south, layer: m1}
+  VDD:  {side: north, layer: m1}
